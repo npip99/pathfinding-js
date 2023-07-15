@@ -23,6 +23,17 @@ class Point {
     multiply(factor) {
         return new Point(factor*this.x, factor*this.y);
     }
+    magnitude() {
+        return Math.sqrt(this.x*this.x + this.y*this.y);
+    }
+    normalize() {
+        return this.multiply(1/this.magnitude());
+    }
+}
+
+// f=0 => p1, f=1 => p2
+function lerp(p1, p2, f) {
+    return p1.multiply(1-f).plus(p2.multiply(f));
 }
 
 class HalfEdge {

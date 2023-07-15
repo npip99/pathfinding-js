@@ -150,7 +150,6 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             bestPath['distance'] = finalG;
             bestPath['path'] = path;
             bestPath['searchNode'] = searchNode;
-            //console.log('New Best Path:', searchNode, finalG);
         }
         // No further successors, as we already made it to the dst
         return [];
@@ -266,7 +265,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
     return successors;
 }
 
-async function polyanya(faces, src, dst) { // Point, Point
+async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
     // Get Src + Dst Face
     let dstFace = null;
     let srcFace = null;
@@ -296,20 +295,36 @@ async function polyanya(faces, src, dst) { // Point, Point
         };
     }
 
-    // Initialize starting search nodes, by going from src to each edge of srcFace
+    // The pq to hold all polyanya search nodes
     let pq = new PriorityQueue((a, b) => a['f'] < b['f']);
+    // Push node into pq, filtering it out if it can't be valid,
+    // passthrough=true returns the node rather than putting it into the pq
+    function pushNode(newSearchNode, passthrough=false) {
+        // If there's a face on the other side to continue exploring, explore it
+        // TODO: Don't count cul-de-sacs that don't contain the dst
+        if (newSearchNode.halfedge.twin != null) {
+            // Push to pq, as long as node isn't dead from max_dist
+            let f = newSearchNode.getF(dst);
+            if (max_dist === undefined || f < max_dist) {
+                if (passthrough) {
+                    return newSearchNode;
+                } else {
+                    pq.push({
+                        'searchNode': newSearchNode,
+                        'f': f,
+                    });
+                }
+            }
+        }
+        return null;
+    }
+
+    // Initialize starting search nodes, by going from src to each edge of srcFace
     currentEdge = srcFace.rootEdge;
     do {
         let newSearchNode = new SearchNode(currentEdge.originPoint, currentEdge.next.originPoint, currentEdge, src, 0, null);
         newSearchNode.TESTMARKER = 0;
-        if (newSearchNode.halfedge.twin != null) {
-            //await new Promise(r => setTimeout(r, 1000));
-            //drawSearchNode(newSearchNode, 'red');
-            pq.push({
-                'searchNode': newSearchNode,
-                'f': newSearchNode.getF(dst),
-            });
-        }
+        pushNode(newSearchNode);
         currentEdge = currentEdge.next;
     } while (currentEdge != srcFace.rootEdge);
 
@@ -319,6 +334,7 @@ async function polyanya(faces, src, dst) { // Point, Point
         'distance': null,
         'path': null,
     };
+    // TODO: Fix hashing so that it works better
     let root_to_g = {};
     let nextSearchNode = null;
     const MAX_ITERATIONS = 500000;
@@ -335,9 +351,8 @@ async function polyanya(faces, src, dst) { // Point, Point
             nextSearchNode = null;
         }
         let rootHash = curSearchNode.root.hash();
-        // If this g is > the last recorded g from that root, exit
+        // If this g is > the last recorded g from that root, skip because it's worse
         if (root_to_g[rootHash] !== undefined && curSearchNode.g > root_to_g[rootHash]) {
-            //console.log('Invalid');
             continue;
         }
         root_to_g[rootHash] = curSearchNode.g;
@@ -345,32 +360,26 @@ async function polyanya(faces, src, dst) { // Point, Point
         if (bestPath['distance'] != null && curSearchNode.getF() >= bestPath['distance']) {
             continue;
         }
-        //await new Promise(r => setTimeout(r, 1000));
-        //drawSearchNode(curSearchNode, 'red');
+        // If there's a max dist and this search node exceeds it, give up
+        if (max_dist !== undefined && curSearchNode.getF() > max_dist) {
+            continue;
+        }
+        // Get the successors and save them for next iterations
         let successors = getSuccessors(curSearchNode, dst, dstFace, bestPath);
-        //console.log(i, curSearchNode, successors);
         if (successors.length == 1) {
             // Just immediately process the successor if there's just one
-            if (successors[0].halfedge.twin != null) {
-                nextSearchNode = successors[0];
-            }
+            nextSearchNode = pushNode(successors[0], true);
         } else {
+            // Push all of the successors if there are many
             for(let successor of successors) {
-                // If there's a face on the other side to continue exploring, explore it
-                // TODO: Don't count cul-de-sacs that don't contain the dst
-                if (successor.halfedge.twin != null) {
-                    pq.push({
-                        'searchNode': successor,
-                        'f': successor.getF(dst),
-                    });
-                }
+                pushNode(successor);
             }
         }
         i += 1;
     }
-    console.log('Num Iters:', i);
+    //console.log('Num Iters:', i);
 
     // Return null if no path found
-    console.log('Best Path:', bestPath);
+    //console.log('Best Path:', bestPath);
     return bestPath['path'] == null ? null : bestPath;
 }
