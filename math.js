@@ -23,6 +23,9 @@ class Point {
     multiply(factor) {
         return new Point(factor*this.x, factor*this.y);
     }
+    dot(other) {
+        return other.x*this.x + other.y*this.y;
+    }
     magnitude() {
         return Math.sqrt(this.x*this.x + this.y*this.y);
     }

@@ -155,8 +155,9 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
         return [];
     }
 
-    // Get if the searchNode is degenerate (root is one of the edge endpoints)
-    let isDegenerate = (searchNode.root == searchNode.startPoint || searchNode.root == searchNode.endPoint);
+    // Check if the searchNode is degenerate (root is on [startPoint, endPoint])
+    // NOTE: Is this guaranteed true when root is on startPoint/endPoint? Or should we check explicitly
+    let isDegenerate = getTriangleSign(searchNode.root, searchNode.startPoint, searchNode.endPoint) == 0;
     // NOTE: It's sometimes possible for getTriangleSign(root, searchNode.startPoint, searchNode.endPoint),
     //       to be negative (Implying CW). Handle this better?
 
@@ -177,9 +178,8 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
 
         // Consider degenerate case
         if (isDegenerate) {
-            // If the root is collinear with the edge, create a new degenerate successor
+            // If the root is collinear with the successor edge, create a new degenerate successor
             if (getTriangleSign(searchNode.root, edgeLine[0], edgeLine[1]) == 0) {
-                // The new degenerate case only matters if the edgeline root is a corner
                 let newRoot = getPointDist(searchNode.root, edgeLine[0]) < getPointDist(searchNode.root, edgeLine[1]) ? edgeLine[0] : edgeLine[1];
                 if (newRoot.isCorner) {
                     let newG = searchNode.g + getPointDist(searchNode.root, newRoot);
@@ -188,10 +188,32 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
                     successors.push(newSearchNode);
                 }
             } else {
-                // Else, the edge with the current root is the successor
-                let newSearchNode = new SearchNode(edgeLine[0], edgeLine[1], processingEdge, searchNode.root, searchNode.g, searchNode);
-                newSearchNode.TESTMARKER = 2;
-                successors.push(newSearchNode);
+                // Else, we have a non-degenerate successor
+                let startToRoot = searchNode.root.minus(searchNode.startPoint);
+                let endToRoot = searchNode.root.minus(searchNode.endPoint);
+                let startToEnd = searchNode.endPoint.minus(searchNode.startPoint);
+                let pastEnd = endToRoot.dot(startToEnd) > 0;
+                let pastStart = startToRoot.dot(startToRoot.multiply(-1)) > 0;
+                if (pastEnd) {
+                    // If the root is beyond the endPoint, use the endPoint as the successor root
+                    if (searchNode.endPoint.isCorner) {
+                        let newSearchNode = new SearchNode(edgeLine[0], edgeLine[1], processingEdge, searchNode.endPoint, searchNode.g, searchNode);
+                        newSearchNode.TESTMARKER = 2.2;
+                        successors.push(newSearchNode);
+                    }
+                } else if (pastStart) {
+                    // If the root is beyond the startPoint, use the startPoint as the successor root
+                    if (searchNode.startPoint.isCorner) {
+                        let newSearchNode = new SearchNode(edgeLine[0], edgeLine[1], processingEdge, searchNode.startPoint, searchNode.g, searchNode);
+                        newSearchNode.TESTMARKER = 2.1;
+                        successors.push(newSearchNode);
+                    }
+                } else {
+                    // If root is on the line, the root is the successor
+                    let newSearchNode = new SearchNode(edgeLine[0], edgeLine[1], processingEdge, searchNode.root, searchNode.g, searchNode);
+                    newSearchNode.TESTMARKER = 2;
+                    successors.push(newSearchNode);
+                }
             }
             continue;
         }
