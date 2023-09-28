@@ -94,7 +94,8 @@ function createIPoints(path, d) {
         }
     }
     // TODO: Drop ipts[-1] if it's too close to path.lenth-1, but not if its src
-    ipts.push(new IPoint(path[path.length-1], [path[path.length-2], path[path.length-1]]));
+    // Satisfies every unique IPoint.line is the same seg array reference
+    ipts.push(new IPoint(path[path.length-1], ipts[ipts.length-1].line));
 
     return ipts;
 }
@@ -303,7 +304,7 @@ class Formation {
         // If the Formation is following a main track, iterate it
         if (this.mainTrack != null) {
             let bestDistanceRemaining = null;
-            let bestPosition = this.mainTrack[0].p;
+            let numAgentsPathing = 0;
             for(let i = 0; i < this.agents.length; i++) {
                 let agent = this.agents[i];
                 if (!agent.isInFormation) {
@@ -331,27 +332,38 @@ class Formation {
                     }
                 }
                 // Keep track of the most progress,
+                if (agent.isPathing) {
+                    numAgentsPathing++;
+                }
                 let distanceRemaining = this.getDistanceRemaining(i);
                 if (bestDistanceRemaining == null || distanceRemaining < bestDistanceRemaining) {
+                    // Track the best track progress
                     bestDistanceRemaining = distanceRemaining;
-                    let distToTrackPoint = agent.pathDistRemaining();
-                    // If the agent is done, the best position is done
-                    if (agent.trackProgress == this.mainTrack.length-1) {
-                        bestPosition = this.mainTrack[this.mainTrack.length-1].p;
-                    } else {
-                        // If agent is in the middle,
-                        // Find the mainTrack pt that matches it
-                        // TODO: Actually walk backwards along the path,
-                        //       Rather than just -Dir*dist
-                        let mainTrackipt = this.mainTrack[agent.trackIndices[agent.trackProgress+1]];
-                        let dir = mainTrackipt.line[0].minus(mainTrackipt.line[1]).normalize();
-                        bestPosition = mainTrackipt.p.plus(dir.multiply(distToTrackPoint));
-                    }
                 }
+            }
+            // Find the mainTrack waypoint that matches the most progress (bestDistanceRemaining)
+            let curIdx = this.mainTrack.length - 1;
+            let bestPosition = this.mainTrack[curIdx].p;
+            let lastLine = null;
+            while (bestDistanceRemaining > 0 && curIdx >= 0) {
+                let mainTrackipt = this.mainTrack[curIdx];
+                // When processing a new line, walk backwards across it
+                if (lastLine == null || lastLine !== mainTrackipt.line) {
+                    lastLine = mainTrackipt.line;
+                    let dir = lastLine[1].minus(lastLine[0]);
+                    let distTravelled = Math.min(dir.magnitude(), bestDistanceRemaining);
+                    bestPosition = lastLine[1].minus(dir.normalize().multiply(distTravelled));
+                    bestDistanceRemaining -= distTravelled;
+                }
+                curIdx--;
             }
             // Update position of the formation, to be the mainTrack waypoint
             // Of the unit that has made the most progress
             this.position = bestPosition;
+            // If all agents have finished pathing, then finish
+            if (numAgentsPathing == 0) {
+                this.stop();
+            }
         }
     }
 }
@@ -392,27 +404,88 @@ async function main() {
     setCanvasDimensions(Math.ceil(SCALE*(maxX+1)), Math.ceil(SCALE*(-minY+1)));
 
     // Constants
+    let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), 5),
-        new Agent(new Point(8.5, -1.5), 5),
-        new Agent(new Point(10.5, -1.5), 5),
-        new Agent(new Point(11.5, -1.5), 5),
-        new Agent(new Point(12.5, -1.5), 5),
+        new Agent(new Point(5.5, -1.5), agentSpeed),
+        new Agent(new Point(8.5, -1.5), agentSpeed),
+        new Agent(new Point(10.5, -1.5), agentSpeed),
+        new Agent(new Point(11.5, -1.5), agentSpeed),
+        new Agent(new Point(12.5, -1.5), agentSpeed),
     ];
     let formation = new Formation();
     formation.addAgents(agents);
     agents = [];
     let lastClick = null; // Stores the Point clicked at, if a point was clicked at
+    let keysPressed = []; // Stores the keys pressed
+    function isKeyPressed(key) {
+        return keysPressed.indexOf(key) > -1;
+    }
 
     // Main Loop
     const FRAME_DELAY_RATIO = 1;
+    const ISOMETRIC_VIEW = false;
     let frame_count = 0;
+
+    let translate = [0, 0];
+    let zoom = 1;
+
     render = async function() {
         frame_count++;
         if (frame_count % FRAME_DELAY_RATIO != 0) {
             window.requestAnimationFrame(render);
             return;
         }
+
+        // User Input
+
+        let scrollSpeed = 5;
+        if (isKeyPressed('ShiftLeft') || isKeyPressed('ShiftRight')) {
+            scrollSpeed *= 2;
+        }
+        if (isKeyPressed('KeyA')) {
+            translate[0] += scrollSpeed;
+        }
+        if (isKeyPressed('KeyD')) {
+            translate[0] -= scrollSpeed;
+        }
+        if (isKeyPressed('KeyW')) {
+            translate[1] += scrollSpeed;
+        }
+        if (isKeyPressed('KeyS')) {
+            translate[1] -= scrollSpeed;
+        }
+        if (isKeyPressed('KeyN')) {
+            zoom *= 0.975;
+        }
+        if (isKeyPressed('KeyM')) {
+            zoom /= 0.975;
+        }
+        zoom = Math.min(Math.max(zoom, 0.5), 3);
+        if (isKeyPressed('KeyR')) {
+            formation.stop();
+        }
+
+        // Initial Rendering Setup
+
+        const rect = canvas.getBoundingClientRect();
+        // Reset and Blank screen
+        ctx.resetTransform();
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        // Set the projection matrix
+        ctx.translate(rect.width/2, rect.height/2);
+        ctx.scale(zoom, zoom);
+        ctx.translate(-rect.width/2, -rect.height/2);
+        ctx.translate(translate[0], translate[1]);
+        if (ISOMETRIC_VIEW) {
+            ctx.translate(rect.width/2, rect.height/2);
+            ctx.scale(1, Math.sqrt(2)/2);
+            ctx.rotate(Math.PI / 4);
+            ctx.translate(-rect.width/2, -rect.height/2);
+        }
+
+        // Iteration and Rendering
+
         // Update path code
         if (lastClick != null) {
             for(let agent of agents) {
@@ -458,6 +531,7 @@ async function main() {
                 drawPoint(mainTrack[i].p, 'blue', 1);
             }
         }
+
         // Queue next Render
         lastClick = null;
         window.requestAnimationFrame(render);
@@ -467,10 +541,33 @@ async function main() {
     // Store click point
     canvas.onclick = async function(event) {
         const rect = canvas.getBoundingClientRect();
-        const x = (event.clientX - rect.left)/SCALE + 0.1/SCALE;
-        const y = -(event.clientY - rect.top)/SCALE + 0.1/SCALE;
+        // Get positive X, Y w.r.t the top-left corner of the canvas
+        let originX = event.clientX - rect.left;
+        let originY = event.clientY - rect.top;
+        // Transform based on canvas projection matrix
+        let transformed = getTransformedCoordinates(originX, originY);
+        originX = transformed.x;
+        originY = transformed.y;
+        // Transform into abstract value
+        let x = originX/SCALE + 0.1/SCALE;
+        let y = -originY/SCALE + 0.1/SCALE;
         console.log('Clicked at: ', x, y);
         lastClick = new Point(x, y);
     };
+
+    // Keypress Logic
+    document.addEventListener('keydown', (event) => {
+        // Add the key to the keysPressed array if it's not already there
+        if (!keysPressed.includes(event.code)) {
+            keysPressed.push(event.code);
+        }
+    });
+    document.addEventListener('keyup', (event) => {
+        // Remove the key from the keysPressed array
+        const index = keysPressed.indexOf(event.code);
+        if (index > -1) {
+            keysPressed.splice(index, 1);
+        }
+    });
 }
 main();

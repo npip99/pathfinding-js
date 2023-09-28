@@ -2,11 +2,21 @@
 
 const canvas = document.getElementById('myCanvas');
 const ctx = canvas.getContext('2d');
-const SCALE = 12;
+const SCALE = 18;
 
 function setCanvasDimensions(width, height) {
     canvas.width = width;
     canvas.height = height;
+}
+
+// Map x,y from the canvas, to their transformed versions
+function getTransformedCoordinates(x, y) {
+    let transform = ctx.getTransform().inverse();
+    let pt = transform.transformPoint(new DOMPoint(x, y));
+    return {
+        x: pt.x,
+        y: pt.y,
+    };
 }
 
 function drawSegment(p1, p2, color) {
@@ -47,11 +57,12 @@ function drawFace(face, fillColor) {
         currentEdge = currentEdge.next;
         ctx.lineTo(SCALE*currentEdge.originPoint.x, -SCALE*currentEdge.originPoint.y);
     } while (currentEdge != face.rootEdge);
-    if (fillColor !== undefined) {
-        ctx.fillStyle = fillColor;
-        ctx.strokeStyle = fillColor;
-        ctx.fill();
-    }
+    ctx.strokeStyle = fillColor;
+    ctx.miterLimit = 2;
+    ctx.lineWidth = 3;
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
     ctx.stroke();
 }
 
