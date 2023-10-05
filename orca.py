@@ -8,17 +8,28 @@ import random
 
 EPSILON = 1e-9
 
-def project_point_onto_line(p, A, B):
-    # Points A and B on the line y = mx + b
-    A = np.array(A)
-    B = np.array(B)
+# Get the particular t s.t. v_p + t v_dir intersects the given halfplane
+def get_t(halfplane, v_p, v_dir):
+    H_p, H_n = halfplane
+    # Formula for t_i
+    t_i_numerator = np.dot(H_n, H_p - v_p)
+    t_i_denominator = np.dot(H_n, v_dir)
+    # If t_i is too large, then either [t_left, t_right] is entirely in range,
+    # or not in range at all
+    if abs(t_i_denominator) < EPSILON:
+        # If J_n and H_p-J_p point in the same direction,
+        if -t_i_numerator >= 0:
+            return (float('-inf'), float('inf'))
+        else:
+            # If they don't, it's pointing the wrong way
+            return None
+    t_i = t_i_numerator / t_i_denominator
+    # Bound t-range based on whether or not J_n and H_dir go in the same direction
+    if t_i_denominator > 0:
+        return (t_i, float('inf'))
+    if t_i_denominator < 0:
+        return (float('-inf'), t_i)
 
-    # Point to be projected
-    P1 = np.array(p)
-
-    # Calculating the projection of P1 onto the line
-    P2 = A + np.dot(B - A, P1 - A) / np.dot(B - A, B - A) * (B - A)
-    return P2
 
 # Get velocity obstacle
 def get_vo(A, B, delta):
@@ -30,15 +41,13 @@ def get_vo(A, B, delta):
     tangent_dist2 = u**2+v**2-r**2
     # This doesn't have to be an epsilon check, as tangent_dist2 = 0 is valid
     if tangent_dist2 < 0:
-        #r = np.linalg.norm(center)
-        #tangent_dist2 = 0
-        return None
+        return (center, r, None, None, None)
     tangent_dist = math.sqrt(tangent_dist2)
 
     # Get the theta between a tangent line and the center
     center_dist = np.linalg.norm(center)
     theta = np.arcsin(r/center_dist)
-    
+
     # Compute rotation matrices
     R_anticlockwise = np.array([[np.cos(theta), -np.sin(theta)],
                                 [np.sin(theta), np.cos(theta)]])
@@ -54,28 +63,32 @@ def get_vo(A, B, delta):
 
 def get_boundary(vo, p):
     center, r, tangent1_unit, tangent2_unit, tangent_dist = vo
-    # NOTE: tangent{1,2} can be vanishingly small,
-    #       so we have to use tangent{1,2}_unit
-    tangent1 = tangent1_unit * tangent_dist
-    tangent2 = tangent2_unit * tangent_dist
-    # Project p onto the tangent boundary, and get the norm associated with p
-    p1 = np.dot(p, tangent1_unit) * tangent1_unit
-    l1norm = (tangent1 - center)
-    l1norm /= np.linalg.norm(l1norm)
-    p2 = np.dot(p, tangent2_unit) * tangent2_unit
-    l2norm = (tangent2 - center)
-    l2norm /= np.linalg.norm(l2norm)
-    # Invalidate p if it isn't on the correct side (beyond) the tangent point
-    if np.dot(p1 - tangent1, tangent1_unit) < 0:
-        p1 = None
-    if np.dot(p2 - tangent2, tangent2_unit) < 0:
-        p2 = None
-    # Set proj to the closer between p1 and p2
     proj = None
-    if p1 is not None and p2 is not None:
-        proj = (p1, l1norm) if np.linalg.norm(p1-p) < np.linalg.norm(p2-p) else (p2, l2norm)
-    elif p1 is not None or p2 is not None:
-        proj = (p1, l1norm) if p1 is not None else (p2, l2norm)
+    # If there are no tangent lines, just project onto the circle
+    if tangent_dist is not None:
+        # NOTE: tangent{1,2} can be vanishingly small,
+        #       so we have to use tangent{1,2}_unit
+        tangent1 = tangent1_unit * tangent_dist
+        tangent2 = tangent2_unit * tangent_dist
+        # Project p onto the tangent boundary, and get the norm associated with p
+        p1 = np.dot(p, tangent1_unit) * tangent1_unit
+        l1norm = (tangent1 - center)
+        l1norm /= np.linalg.norm(l1norm)
+        p2 = np.dot(p, tangent2_unit) * tangent2_unit
+        l2norm = (tangent2 - center)
+        l2norm /= np.linalg.norm(l2norm)
+        # Invalidate p if it isn't on the correct side (beyond) the tangent point
+        if np.dot(p1 - tangent1, tangent1_unit) < 0:
+            p1 = None
+        if np.dot(p2 - tangent2, tangent2_unit) < 0:
+            p2 = None
+        # Set proj to the closer between p1 and p2
+        if p1 is not None and p2 is not None:
+            proj = (p1, l1norm) if np.linalg.norm(p1-p) < np.linalg.norm(p2-p) else (p2, l2norm)
+        elif p1 is not None or p2 is not None:
+            proj = (p1, l1norm) if p1 is not None else (p2, l2norm)
+        else:
+            proj = None
     # If there's a valid proj, use the proj
     if proj is not None:
         ret = proj
@@ -93,9 +106,6 @@ def get_boundary(vo, p):
 # Get the orca_{A|B}^\delta
 def get_orca(A, B, delta):
     vo = get_vo(A, B, delta)
-    if vo is None:
-        print("NO VO")
-        return None
     p = A.vel - B.vel
     boundary, norm = get_boundary(vo, p)
     # NOTE: u can be vanishingly small, we have to use "norm" for the halfplane
@@ -103,9 +113,13 @@ def get_orca(A, B, delta):
     line_point = A.vel + u/2
     return (line_point, norm)
 
-def linear_programming_1d(halfplanes, new_halfplane, radius, pref, result):
+def linear_programming_1(halfplanes, new_halfplane, pref, radius, result, use_direction=False):
     H_p, H_n = new_halfplane
     H_dir = np.dot(np.array([[0, -1], [1, 0]]), H_n)
+
+    # If using direction, pick the point at infinity
+    if use_direction:
+        pref = 1000*pref
 
     # If result is already on the goodside of the new halfplane, nothing to do
     if np.dot(result - H_p, H_n) >= 0:
@@ -128,54 +142,80 @@ def linear_programming_1d(halfplanes, new_halfplane, radius, pref, result):
         
         # Now, we clamp [t_left, t_right] based on the rest of the half planes
         for halfplane in halfplanes:
-            J_p, J_n = halfplane
-            # Formula for t_i
-            t_i_numerator = np.dot(J_n, J_p - H_p)
-            t_i_denominator = np.dot(J_n, H_dir)
-            # If t_i is too large, then either [t_left, t_right] is entirely in range,
-            # or not in range at all
-            if abs(t_i_denominator) < EPSILON:
-                seg = H_p + t_left * H_dir
-                # If J_n and seg-J_p point in the same direction,
-                if np.dot(J_n, seg - J_p) >= 0:
-                    continue
-                else:
-                    # If they don't, it's pointing the wrong way
-                    return None
-            t_i = t_i_numerator / t_i_denominator
-            # Bound t_i*H_dir based on whether or not J_n and H_dir go in the same direction
-            if np.dot(J_n, H_dir) > 0:
-                t_left = max(t_left, t_i)
-            if np.dot(J_n, H_dir) < 0:
-                t_right = min(t_right, t_i)
+            t_range = get_t(halfplane, H_p, H_dir)
+            t_left = max(t_left, t_range[0])
+            t_right = min(t_right, t_range[1])
+            if t_left > t_right:
+                return None
 
     # Calculate preferred t
     pref_t = np.dot(pref - H_p, H_dir) # / np.linalg.norm(H_dir)**2
 
     # Clamp based on the existent constraints
-    if t_left > t_right:
-        return None
     pref_t = min(max(pref_t, t_left), t_right)
 
     # Return the new result
     return H_p + pref_t * H_dir
 
-def linear_programming_2d(halfplanes, radius, pref):
+def linear_programming_2(halfplanes, pref, radius, use_direction=False):
     # Linear Programming
     processed_halfplanes = []
     result = pref
-    for new_halfplane in halfplanes:
-        result = linear_programming_1d(processed_halfplanes, new_halfplane, radius, pref, result)
-        if result is None:
-            print("NONE!")
-            return None
+    if use_direction or np.linalg.norm(result) >= radius:
+        result = (result / np.linalg.norm(result)) * radius
+    for i, new_halfplane in enumerate(halfplanes):
+        next_result = linear_programming_1(processed_halfplanes, new_halfplane, pref, radius, result, use_direction)
+        if next_result is None:
+            return result, i
+        else:
+            result = next_result
         processed_halfplanes.append(new_halfplane)
     # Verify Validity
     for halfplane in halfplanes:
         H_p, H_n = halfplane
-        if np.dot(result - H_p, H_n) < 0:
+        if np.dot(result - H_p, H_n) < -EPSILON:
             print("INVALID", np.dot(result - H_p, H_n), halfplane)
-    return result
+    return result, -1
+
+def solve_lp(halfplanes, pref, radius):
+    # Find a solution that is closest to pref
+    result, fail_i = linear_programming_2(halfplanes, pref, radius, False)
+    if fail_i == -1:
+        return result
+    else:
+        dist = 0.0
+        for i in range(fail_i, len(halfplanes)):
+            H_p, H_n = halfplanes[i]
+            H_dir = np.dot(np.array([[0, -1], [1, 0]]), H_n)
+            # If result is within dist of the correct side of H, we're good
+            if np.dot(H_n, result - H_p) >= -dist:
+                continue
+            # Otherwise, get the isohalfplanes
+            isohalfplanes = []
+            for halfplane in halfplanes[:i]:
+                J_p, J_n = halfplane
+                iso_p = None
+
+                t_range = get_t(halfplane, H_p, H_dir)
+                if t_range[0] > t_range[1]:
+                    iso_p = (H_p + J_p)/2
+                elif t_range[0] == float('-inf') and t_range[1] == float('inf'):
+                    # This doesn't introduce a constraint
+                    continue
+                else:
+                    t = t_range[0] if t_range[0] != float('-inf') else t_range[1]
+                    iso_p = H_p + t * H_dir
+                iso_n = (J_n - H_n)
+                iso_n /= np.linalg.norm(iso_n)
+                isohalfplanes.append((iso_p, iso_n))
+            # Get the new result
+            new_result, new_fail_i = linear_programming_2(isohalfplanes, H_n, radius, True)
+            if new_fail_i == -1:
+                result = new_result
+            # Get the new dist
+            dist = np.dot(H_n, H_p - result)
+
+        return result
 
 FPS = 60
 
@@ -205,7 +245,7 @@ class Agent:
             halfplanes.append(halfplane)
 
         # Find the next velocity with Linear Programming
-        self.next_vel = linear_programming_2d(halfplanes+added_halfplanes, self.max_speed, pref_vel)
+        self.next_vel = solve_lp(halfplanes+added_halfplanes, pref_vel, self.max_speed)
 
     def move(self, delta):
         self.vel = self.next_vel
@@ -218,17 +258,17 @@ agents = [alice, bob, charlie]
 
 def generate_n_circle(n, radius):
     agents = []
-    offset = np.array([50, 50])
+    offset = np.array([40, 40])
     for i in range(n):
         theta = 2*math.pi*i/n
         R_anticlockwise = np.array([[np.cos(theta), -np.sin(theta)],
                                     [np.sin(theta), np.cos(theta)]])
         pos = np.dot(R_anticlockwise, np.array([0, radius]))
         pos += np.array([random.random()*1e-1, random.random()*1e-1])
-        agents.append(Agent(offset+pos, offset+[-pos[0], -pos[1]], radius/4, radius/n))
+        agents.append(Agent(offset+pos, offset+[-pos[0], -pos[1]], radius/n, radius/2))
     return agents
 
-#agents = generate_n_circle(10, 50)
+agents = generate_n_circle(10, 50)
 
 fig, ax = plt.subplots()
 
@@ -246,24 +286,34 @@ arrows = []
 
 # Animation update function
 print("DIST:", np.min(pdist([agent.pos for agent in agents])))
+current_time = 0
+done = False
 def update(num):
-    if len(arrows) > 0:
-        pass#return
+    global current_time
+    global done
+    if done:
+        return
     delta = 1 / FPS
+    current_time += delta
     
     # Calculate ORCA over the agents
     print("=======================")
-    print("CURRENT DIST:", np.min(pdist([agent.pos for agent in agents])))
+    print("CURRENT DIST:", np.min(pdist([agent.pos for agent in agents])), "(vs r={})".format(agents[0].r))
+    print("-----------")
     for agent in agents:
         print("Agent:", repr(agent.pos), " | ", repr(agent.vel))
         other_agents = [a for a in agents if a is not agent]
         agent.constrain(other_agents, delta)
         print("New Velocity:", repr(agent.next_vel))
         print("-----------")
+    last_fastest_speed = np.max([np.linalg.norm(a.vel) for a in agents])
+    this_fastest_speed = np.max([np.linalg.norm(a.next_vel) for a in agents])
+    if last_fastest_speed == 0 and this_fastest_speed == 0:
+        print("DONE in {} seconds!".format(current_time))
+        done = True
 
     # Move the agents
     for agent in agents:
-        #ax.add_patch(Circle((agent.pos[0], agent.pos[1]), agent.r, alpha=0.5))
         agent.move(delta)
     print("CURRENT DIST:", np.min(pdist([agent.pos for agent in agents])))
     
