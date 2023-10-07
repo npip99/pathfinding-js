@@ -356,7 +356,6 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
         'distance': null,
         'path': null,
     };
-    // TODO: Fix hashing so that it works better
     let root_to_g = {};
     let nextSearchNode = null;
     const MAX_ITERATIONS = 500000;

@@ -78,10 +78,10 @@ function LoadPolyData(poly_data) {
             halfedges[i].next = halfedges[(i+1)%halfedges.length];
             // Setting the HalfEdge prev: halfedges[(i+1)%halfedges.length].prev = halfedges[i];
             // Store this halfedge
-            halfedge_hashes_to_halfedge[halfedges[i].hash()] = halfedges[i];
+            halfedge_hashes_to_halfedge[(new Point(halfedges[i].originPoint.hash(), halfedges[i].next.originPoint.hash())).hash()] = halfedges[i];
 
             // Look for opposite twin and set twin if found
-            let opposite_hash = halfedges[i].next.originPoint.hash()*1300*1300 + halfedges[i].originPoint.hash();
+            let opposite_hash = (new Point(halfedges[i].next.originPoint.hash(), halfedges[i].originPoint.hash())).hash();
             if (halfedge_hashes_to_halfedge[opposite_hash] !== undefined) {
                 halfedge_hashes_to_halfedge[opposite_hash].twin = halfedges[i];
                 halfedges[i].twin = halfedge_hashes_to_halfedge[opposite_hash];

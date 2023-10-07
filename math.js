@@ -5,32 +5,56 @@ Data Structures
 ====================
 */
 
+const EPSILON = 1e-13;
+
+// 32-bit FNV hash on an arbitrary buffer
+function fnv_hash(buffer) {
+    const byteView = new Uint8Array(buffer);
+
+    let h = 2166136261;
+    byteView.forEach(byte => {
+        h ^= byte;
+        h = Math.imul(h, 16777619);
+    });
+    return h;
+}
+
 class Point {
     constructor(x, y, isCorner) {
         this.x = x;
         this.y = y;
         this.isCorner = isCorner;
     }
+    copy() {
+        return new Point(this.x, this.y, this.isCorner);
+    }
     hash() {
-        return this.x * 1300 + this.y;
+        const buffer = new ArrayBuffer(16);
+        const floatView = new Float64Array(buffer);
+        floatView[0] = this.x;
+        floatView[1] = this.y;
+        return fnv_hash(buffer);
+    }
+    plus(other) {
+        return new Point(this.x+other.x, this.y+other.y);
     }
     minus(other) {
         return new Point(this.x-other.x, this.y-other.y);
     }
-    plus(other) {
-        return new Point(other.x+this.x, other.y+this.y);
-    }
     multiply(factor) {
-        return new Point(factor*this.x, factor*this.y);
+        return new Point(this.x*factor, this.y*factor);
+    }
+    divide(factor) {
+        return new Point(this.x/factor, this.y/factor);
     }
     dot(other) {
-        return other.x*this.x + other.y*this.y;
+        return this.x*other.x + this.y*other.y;
     }
     magnitude() {
         return Math.sqrt(this.x*this.x + this.y*this.y);
     }
     normalize() {
-        return this.multiply(1/this.magnitude());
+        return this.divide(this.magnitude());
     }
 }
 
@@ -49,9 +73,6 @@ class HalfEdge {
         this.next = null;
         this.face = null;
         this.twin = null;
-    }
-    hash() {
-        return this.originPoint.hash()*1300*1300 + this.next.originPoint.hash();
     }
 }
 
@@ -91,7 +112,7 @@ Math Functions
 */
 
 function getPointDist(p1, p2) {
-    return Math.sqrt((p1.x-p2.x)*(p1.x-p2.x)+(p1.y-p2.y)*(p1.y-p2.y));
+    return p1.minus(p2).magnitude();
 }
 
 function getIntersection(seg1, seg2) {
@@ -169,8 +190,7 @@ Mesh Functions
 */
 
 function makeConvex(faces) {
-    console.error('Not Done!');
-    return null;
+    throw "Unimplemented Error";
     let newFaces = [];
     for(let face of faces) {
         console.log('Handling Face:', face);
