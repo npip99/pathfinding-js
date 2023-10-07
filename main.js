@@ -1,8 +1,16 @@
 class Agent {
+    // Current position
     position;
+    // Current speed
     speed;
+    // Waypoints are points along the macro-scale path
+    waypoints = [];
+    // Path is the current path to waypoints[0]
     path = [];
-    isPathing = false;
+    // curTarget is path[0]
+    curTarget = null;
+    // Cache
+    faces = null;
     constructor(position, speed) {
         this.position = position;
         this.speed = speed;
@@ -14,55 +22,97 @@ class Agent {
         }
         return totalPathLength;
     }
-    async pathfind(faces, dst, max_dist=undefined) {
-        let result = await polyanya(faces, this.position, dst, max_dist);
-        if (result != null) {
-            this.path = result['path'];
-            this.path.splice(0, 1); // Ignore src in Path
-            this.isPathing = true;
-            return result['distance'];
-        }
-        return null;
+    async setWaypoints(faces, waypoints, max_start_dist=undefined) {
+        this.faces = faces;
+        this.stop();
+        this.waypoints = waypoints;
+        // Update the current target
+        await this.updateTarget(max_start_dist, true);
     }
     stop() {
+        this.waypoints = [];
         this.path = [];
-        this.isPathing = false;
+        this.curTarget = null;
     }
-    iterate(deltaTime, speed=undefined) {
-        let remainingTime = deltaTime;
+    isPathing() {
+        return this.curTarget != null;
+    }
+    // Set Agent's target for this iteration
+    async updateTarget(max_path_dist=undefined, initializing=false) {
+        // If we're done with our target,
+        if (this.curTarget == null) {
+            if (!initializing) {
+                // Drop path[0]
+                this.path.splice(0, 1);
+            }
+            // If we're done with our path, get a new path or exit if done
+            if (this.path.length == 0) {
+                if (!initializing) {
+                    // Drop waypoints[0]
+                    this.waypoints.splice(0, 1);
+                }
+                // Skip over null waypoints
+                while(this.waypoints.length > 0 && this.waypoints[0] == null) {
+                    this.waypoints.splice(0, 1);
+                }
+                // If there are no more waypoints, we're done
+                if (this.waypoints.length == 0) {
+                    this.stop();
+                    return;
+                }
+                let result = await polyanya(this.faces, this.position, this.waypoints[0], max_path_dist);
+                if (result == null) {
+                    this.stop();
+                    return;
+                }
+                this.path = result['path'];
+                this.path.splice(0, 1); // Ignore src in Path
+            }
+            // Use the next path
+            this.curTarget = this.path[0];
+        }
+        // If we've already reached the target, pop it and update target
+        if (this.position.minus(this.curTarget).magnitude() < EPSILON) {
+            this.position = this.curTarget;
+            this.curTarget = null;
+            this.updateTarget(max_path_dist);
+        }
+    }
+    // Iterate the vec
+    async iterate(deltaTime, speed=undefined) {
+        // Update the target
+        await this.updateTarget();
         if (speed === undefined) {
             speed = this.speed;
         }
-        // If there's path left, move along the path
-        if (this.path.length > 0) {
-            let nextWaypoint = this.path[0];
-            let nextWaypointDist = getPointDist(this.position, nextWaypoint);
-            let waypointDir = nextWaypoint.minus(this.position).normalize();
-            let maxMovementDist = speed * deltaTime;
 
-            // If we can reach the Waypoint, just land right on the Waypoint
-            if (nextWaypointDist <= maxMovementDist) {
-                this.position = nextWaypoint;
-                this.path.splice(0, 1); // TODO: Make a LinkedList for speed
-                // Save the remaining time
-                remainingTime = (1 - nextWaypointDist/maxMovementDist) * deltaTime;
-            } else {
-                // Else, get closer by maxMovementDist
-                this.position = this.position.plus(waypointDir.multiply(maxMovementDist));
-                remainingTime = 0;
+        // Our preferred velocity
+        let prefVel = null;
+
+        // If we have no target, our pref vel is nothing
+        if (this.curTarget == null) {
+            prefVel = new Point(0, 0);
+        } else {
+            // Otherwise, our pref vel is Displacement/Time (Capped at max speed)
+            prefVel = this.curTarget.minus(this.position).divide(deltaTime);
+            if (prefVel.magnitude() > speed) {
+                prefVel = prefVel.normalize().multiply(speed);
             }
         }
-        // Mark whether or not this iteration completed the path
-        if (this.path.length == 0) {
-            this.isPathing = false;
-        }
-        // If there's still pathing and time remaining, iterate again
-        if(this.isPathing == true && remainingTime > 0) {
-            return this.iterate(remainingTime, speed);
-        } else {
-            // Else, pass forward the unused time
-            return remainingTime;
-        }
+
+        // Iterate using the prefVel
+        let deltaPos = prefVel.multiply(deltaTime);
+        this.position = this.position.plus(deltaPos);
+
+        // timeUsed is how much it did move, versus how much it moves per second
+        let timeUsed = deltaPos.magnitude() / speed;
+        let timeRemaining = Math.max(deltaTime - timeUsed, 0);
+
+        // Save the most recent velocity
+        this.prevVel = deltaPos.divide(timeUsed);
+
+        // Return any remaining time to the caller
+        return timeRemaining;
     }
 }
 
@@ -128,7 +178,7 @@ class Formation {
         if (this.mainTrack != null) {
             this.mainTrack = null;
             for(let agent of this.agents) {
-                if (agent.isInFormation) {
+                if (agent.isInFormation && agent.isPathing()) {
                     agent.stop();
                     agent.isInFormation = false;
                 }
@@ -136,8 +186,9 @@ class Formation {
         }
     }
     async pathfind(faces, dst) {
+        this.stop();
         this.faces = faces;
-        const IPOINT_DIST = this.speed/2;
+        const IPOINT_DIST = this.speed*1; // IPOINTS are spaced between 1 Second of movement
         const FORMATION_IPOINT_DIST = this.speed;
         let result = await polyanya(faces, this.position, dst);
         // If the result exists, and involves actual movement,
@@ -163,39 +214,14 @@ class Formation {
                     let isValid = (await polyanya(faces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
                     currentTrack.push(isValid ? currentTrackPt : null);
                 }
+                // TODO: Make these the closest valid points to "currentTrackPt"
+                if (currentTrack[0] == null) {
+                    currentTrack[0] = this.mainTrack[0].p;
+                }
+                if (currentTrack[currentTrack.length-1] == null) {
+                    currentTrack[currentTrack.length-1] = this.mainTrack[this.mainTrack.length-1].p;
+                }
                 allTracks.push(currentTrack);
-            }
-
-            // Post-process the tracks to remove any nulls
-            let allTrackIndices = [];
-            for(let trackIdx = 0; trackIdx < this.relative_positions.length; trackIdx++) {
-                // TODO: Make this the closest valid pt "near" the starting location
-                let firstTarget = allTracks[trackIdx][0];
-                if (firstTarget == null) {
-                    firstTarget = this.mainTrack[0].p;
-                }
-                // The new non-null track, and the mainTrack idx each element refers to
-                let track = [firstTarget];
-                let trackIndices = [0];
-                for(let i = 1; i < this.mainTrack.length; i++) {
-                    // Get the next valid track target >= i
-                    let idx = i;
-                    let trackTarget = null;
-                    while(trackTarget == null && idx < this.mainTrack.length) {
-                        trackTarget = allTracks[trackIdx][idx];
-                        idx++;
-                    }
-                    // If there's none, get the last mainTrack point
-                    // TODO: Make this the closest valid pt "near"
-                    // Where the unit is supposed to be
-                    if (trackTarget == null) {
-                        trackTarget = this.mainTrack[this.mainTrack.length-1].p;
-                    }
-                    track.push(trackTarget);
-                    trackIndices.push(idx-1);
-                }
-                allTracks[trackIdx] = track;
-                allTrackIndices.push(trackIndices);
             }
 
             // Generate a cost matrix between each track and each agent
@@ -203,106 +229,138 @@ class Formation {
             for(let i = 0; i < this.agents.length; i++) {
                 let trackCosts = Array(allTracks.length);
                 for(let j = 0; j < allTracks.length; j++) {
+                    // Cost = Distance^2 between agent's position and track start point
                     trackCosts[j] = Math.pow(getPointDist(this.agents[i].position, allTracks[j][0]), 2);
                 }
                 costMatrix[i] = trackCosts;
             }
             // Permute the tracks so that they match with the best agent
-            // This creates the minimal Sum(Distance^2) from costMatrix
+            // This gets the permutation with the minimal Sum(Cost) from costMatrix
             let trackPermutation = hungarian(costMatrix);
-            allTracks = allTracks.map((row, i) => allTracks[trackPermutation[i]]);
-            allTrackIndices = allTrackIndices.map((row, i) => allTrackIndices[trackPermutation[i]]);
+            allTracks = allTracks.map((_, i) => allTracks[trackPermutation[i]]);
 
             // Initialize all of the agents along their track
             for(let i = 0; i < this.agents.length; i++) {
                 this.agents[i].isInFormation = false;
-                await this.startTrack(this.agents[i], allTracks[i], allTrackIndices[i]);
+                await this.startTrack(this.agents[i], allTracks[i]);
             }
-        } else { // result == null
-            this.stop();
+        } else {
+            console.error('Formation could not pathfind!');
         }
     }
-    async startTrack(agent, track, trackIndices) {
+    async startTrack(agent, track) {
         // <= 5 seconds away to join formation
         const MAX_START_FORMATION_DIST = this.speed*5;
         if (!agent.isInFormation) {
-            let dist = await agent.pathfind(this.faces, track[0], MAX_START_FORMATION_DIST);
-            if (dist == null) {
+            await agent.setWaypoints(this.faces, track, MAX_START_FORMATION_DIST);
+            if (!agent.isPathing()) {
                 // TODO: Handle if Agent cannot join formation
                 console.error('Could not join formation!', agent.position, track[0]);
                 return;
             }
             agent.isInFormation = true;
-            agent.isJoining = true;
             agent.isTracking = false;
-            agent.trackDistance = dist;
-            agent.trackProgress = -1;
             agent.track = track;
-            agent.trackIndices = trackIndices; // The idx its pointing to
         }
     }
     // Get the amount of distance remaining for this agent
     getDistanceRemaining(agent_index) {
+        if (this.mainTrack == null) {
+            return null;
+        }
         let agent = this.agents[agent_index];
         if (!agent.isInFormation) {
             return null;
         }
-        let trackProgress = agent.trackProgress;
-        if (trackProgress == agent.track.length-1) {
+        if (agent.waypoints == null) {
             return 0;
         }
-        let curTrackIdx = agent.trackIndices[trackProgress+1];
-        let distToTrackPoint = agent.pathDistRemaining();
-        let distTrackPointToEnd = 0;
-        for(let i = curTrackIdx; i < agent.track.length-1; i++) {
-            distTrackPointToEnd += getPointDist(this.mainTrack[i].p, this.mainTrack[i+1].p);
+        // Get the distance for the agents current path
+        // TODO: If a detour is faster than mainTrack, make the detouring agent slower instead
+        let pathDist = agent.pathDistRemaining();
+        // Get the distance between the waypoints, as measured along the mainTrack
+        let waypointDist = 0;
+        for(let i = this.mainTrack.length-agent.waypoints.length; i < this.mainTrack.length-1; i++) {
+            waypointDist += getPointDist(this.mainTrack[i].p, this.mainTrack[i+1].p);
         }
-        return distToTrackPoint + distTrackPointToEnd;
+        return pathDist + waypointDist;
     }
-    getIdealSpeed(agent_index, remainingTimes) {
+    getIdealSpeeds(deltaTime) {
         const MAX_SPEEDUP = 0.25; // Max speed-up of 25%
-        let curTrackRemaining = null;
-        let minTrackRemaining = null;
+        if (this.mainTrack == null) {
+            throw "Invalid Call!";
+        }
+
+        // Get distance remaining for each Agent, along with the minimum distance remaining
+        let distanceRemainings = Array(this.agents.length);
+        let minDistanceRemaining = null;
         for(let i = 0; i < this.agents.length; i++) {
             let agent = this.agents[i];
             if (!agent.isInFormation) {
                 continue;
             }
 
-            let timeAdjustedDistance = Math.max(0, this.getDistanceRemaining(i) - this.speed*remainingTimes[i]);
-            minTrackRemaining = minTrackRemaining == null ? timeAdjustedDistance : Math.min(minTrackRemaining, timeAdjustedDistance);
-            if (i == agent_index) {
-                curTrackRemaining = timeAdjustedDistance;
+            let distanceRemaining = this.getDistanceRemaining(i);
+            distanceRemainings[i] = distanceRemaining;
+            minDistanceRemaining = minDistanceRemaining == null ? distanceRemaining : Math.min(minDistanceRemaining, distanceRemaining);
+        }
+
+        // Generate the ideal speeds for each Agent
+        let idealSpeeds = Array(this.agents.length);
+        for(let i = 0; i < this.agents.length; i++) {
+            let agent = this.agents[i];
+            if (!agent.isInFormation) {
+                continue;
+            }
+            let distanceRemaining = distanceRemainings[i];
+            // If this agent is behind,
+            if (minDistanceRemaining < distanceRemaining - EPSILON) {
+                // Check how far the agent is behind
+                let deltaDist = (distanceRemaining - minDistanceRemaining);
+                // And speed up by the necessary amount to catchup this frame.
+                let neededSpeedup = deltaDist / deltaTime;
+                // Capped at MAX_SPEEDUP or the agent's natural speed
+                let maxSpeed = Math.max(this.speed*(1+MAX_SPEEDUP), agent.speed);
+
+                idealSpeeds[i] = Math.min(maxSpeed, this.speed + neededSpeedup);
+            } else {
+                // No speed-up needed
+                idealSpeeds[i] = this.speed;
             }
         }
-        if (curTrackRemaining == null) {
-            console.error("Cant get ideal speed, agent not in formation");
-            return 0;
-        }
-        // If this agent is behind,
-        if (minTrackRemaining < curTrackRemaining - 1e-13) {
-            // Check how far the agent is behind
-            let deltaDist = (curTrackRemaining - minTrackRemaining);
-            // And speed up by the necessary amount to catchup this frame.
-            let neededSpeedup = deltaDist / remainingTimes[agent_index];
-            // Capped at MAX_SPEEDUP or the agent's natural speed
-            let maxSpeed = Math.max(this.speed*(1.0+MAX_SPEEDUP), this.agents[agent_index].speed);
-            
-            return Math.min(maxSpeed, this.speed + neededSpeedup);
-        } else {
-            // No speed-up needed
-            return this.speed;
-        }
+
+        // Return the ideal speeds
+        return idealSpeeds;
     }
     async iterate(deltaTime) {
-        let remainingTimes = Array(this.agents.length);
-        for(let i = 0; i < this.agents.length; i++) {
-            remainingTimes[i] = deltaTime;
-            //if (this.agents[i].isPathing)
-            //    console.log(i, this.getDistanceRemaining(i), this.getIdealSpeed(i, deltaTime)/this.speed);
-        }
         // If the Formation is following a main track, iterate it
         if (this.mainTrack != null) {
+            // Get Ideal Speed for all Agents
+            let agentSpeeds = this.getIdealSpeeds(deltaTime);
+
+            // Iterate all Agents, with reciprocal collision avoidance
+            let remainingTimes = Array(this.agents.length);
+            for(let i = 0; i < this.agents.length; i++) {
+                let agent = this.agents[i];
+                if (!agent.isInFormation) {
+                    continue;
+                }
+                // Iterate this agent
+                remainingTimes[i] = await agent.iterate(deltaTime, agentSpeeds[i]);
+            }
+            // Iterate again, with any remaining time, using strict collision avoidance
+            for(let i = 0; i < this.agents.length; i++) {
+                let agent = this.agents[i];
+                if (!agent.isInFormation) {
+                    continue;
+                }
+                // Iterate again with any remaining time
+                if (remainingTimes[i] > EPSILON) {
+                    await agent.iterate(remainingTimes[i], agentSpeeds[i]);
+                }
+            }
+
+            // Get the status of agents at end-of-frame
             let bestDistanceRemaining = null;
             let numAgentsPathing = 0;
             for(let i = 0; i < this.agents.length; i++) {
@@ -310,29 +368,8 @@ class Formation {
                 if (!agent.isInFormation) {
                     continue;
                 }
-                // Iterate this agent
-                remainingTimes[i] = agent.iterate(deltaTime, this.getIdealSpeed(i, remainingTimes));
-                // Check if they're done Joining
-                if (agent.isJoining && agent.isPathing == false) {
-                    agent.isJoining = false;
-                    agent.trackDistance = 0;
-                }
-                // If they're done joining, iterate them along the track
-                if (agent.isJoining == false) {
-                    // While the agent is not pathing and there's still more track points,
-                    while (agent.isPathing == false && agent.trackProgress < agent.track.length-1) {
-                        // Mark the current track point as accomplished,
-                        agent.trackProgress++;
-                        // And pathfind to the next track point
-                        if (agent.trackProgress < agent.track.length-1) {
-                            // TODO: Set a pathfind limit here
-                            await agent.pathfind(this.faces, agent.track[agent.trackProgress+1]);
-                            remainingTimes[i] = agent.iterate(remainingTimes[i], this.getIdealSpeed(i, remainingTimes));
-                        }
-                    }
-                }
                 // Keep track of the most progress,
-                if (agent.isPathing) {
+                if (agent.isPathing()) {
                     numAgentsPathing++;
                 }
                 let distanceRemaining = this.getDistanceRemaining(i);
@@ -341,7 +378,8 @@ class Formation {
                     bestDistanceRemaining = distanceRemaining;
                 }
             }
-            // Find the mainTrack waypoint that matches the most progress (bestDistanceRemaining)
+
+            // Find the point along mainTrack that matches the most progress (bestDistanceRemaining)
             let curIdx = this.mainTrack.length - 1;
             let bestPosition = this.mainTrack[curIdx].p;
             let lastLine = null;
@@ -357,8 +395,8 @@ class Formation {
                 }
                 curIdx--;
             }
-            // Update position of the formation, to be the mainTrack waypoint
-            // Of the unit that has made the most progress
+            // Update position of the formation, to be the mainTrack point
+            // measured by the unit that has made the most progress
             this.position = bestPosition;
             // If all agents have finished pathing, then finish
             if (numAgentsPathing == 0) {
@@ -489,7 +527,7 @@ async function main() {
         // Update path code
         if (lastClick != null) {
             for(let agent of agents) {
-                agent.pathfind(faces, lastClick);
+                await agent.setWaypoints(faces, [lastClick]);
             }
             await formation.pathfind(faces, lastClick);
         }
@@ -510,8 +548,8 @@ async function main() {
         for(let i = 0; i < formation.agents.length; i++) {
             let agent = formation.agents[i];
             let isRunning = false;
-            if (agent.isInFormation) {
-                isRunning = formation.getIdealSpeed(i, [...Array(formation.agents.length)].map(() => 1/60)) > formation.speed;
+            if (agent.isInFormation && agent.prevVel !== undefined) {
+                isRunning = agent.prevVel.magnitude() > formation.speed + EPSILON;
             }
             drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green');
             if (DRAW_AGENT_PATHING && agent.path.length > 0) {
