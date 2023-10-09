@@ -1,17 +1,29 @@
+import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
+import { Point, EPSILON, getPointDist, lerp, mergeAllFaces, markCorners, findBadFace } from "./math";
+import { LoadMesh, LoadPolyData } from "./utils";
+import { polyanya } from "./polyanya";
+import { hungarian } from "./hungarian";
+
 class Agent {
     // Current position
-    position;
+    position: Point;
     // Current speed
-    speed;
+    speed: number;
+    // Previous velocity
+    prevVel = new Point(0, 0);
     // Waypoints are points along the macro-scale path
-    waypoints = [];
+    waypoints: Point[] = [];
     // Path is the current path to waypoints[0]
-    path = [];
+    path: Point[] = [];
     // curTarget is path[0]
-    curTarget = null;
+    curTarget: Point | null = null;
     // Cache
     faces = null;
-    constructor(position, speed) {
+    // Information for Formation class
+    // TODO: Have formation use a Map from Agent -> FormationData
+    isInFormation = false;
+    track;
+    constructor(position: Point, speed: number) {
         this.position = position;
         this.speed = speed;
     }
@@ -79,7 +91,7 @@ class Agent {
         }
     }
     // Iterate the vec
-    async iterate(deltaTime, speed=undefined) {
+    async iterate(deltaTime: number, speed?: number) {
         // Update the target
         await this.updateTarget();
         if (speed === undefined) {
@@ -87,7 +99,7 @@ class Agent {
         }
 
         // Our preferred velocity
-        let prefVel = null;
+        let prefVel = new Point(0, 0);
 
         // If we have no target, our pref vel is nothing
         if (this.curTarget == null) {
@@ -118,16 +130,16 @@ class Agent {
 
 // Intermediate Point in a path
 class IPoint {
-    p;
-    line;
-    constructor(point, line) {
+    p: Point;
+    line: Point[];
+    constructor(point: Point, line: Point[]) {
         this.p = point;
         this.line = line;
     }
 }
 
 function createIPoints(path, d) {
-    let ipts = [];
+    let ipts: IPoint[] = [];
 
     // Create ipts every time a distance d is accumulated
     // Start with d so that path[0] is an ipt
@@ -151,11 +163,14 @@ function createIPoints(path, d) {
 }
 
 class Formation {
-    agents = [];
+    agents: Agent[] = [];
     position;
     speed;
     // Tracks for movement
-    mainTrack = null;
+    mainTrack: IPoint[] | null = null;
+    relativePositions: Point[] = [];
+    // Cache
+    faces;
     constructor() {
     }
     addAgents(agents) {
@@ -166,9 +181,9 @@ class Formation {
         // TODO: Find a better meet-up position for all of the agents
         this.position = this.agents[0].position;
         this.speed = null;
-        this.relative_positions = [];
+        this.relativePositions = [];
         for(let i = 0; i < this.agents.length; i++) {
-            this.relative_positions.push(new Point(0, (this.agents.length-1)/2 - i));
+            this.relativePositions.push(new Point(0, (this.agents.length-1)/2 - i));
             if (this.speed == null || this.agents[i].speed < this.speed) {
                 this.speed = this.agents[i].speed;
             }
@@ -198,11 +213,11 @@ class Formation {
 
             // Create all of the other tracks, as shifted versions of the mainTrack
             // This may include `null`, if it shifts into an obstacle or somewhere too far
-            let allTracks = [];
-            for(let i = 0; i < this.relative_positions.length; i++) {
-                let offset = this.relative_positions[i];
+            let allTracks: (Point | null)[][] = [];
+            for(let i = 0; i < this.relativePositions.length; i++) {
+                let offset = this.relativePositions[i];
                 // Go through the mainTrack, and create the currentTrack using the offset above
-                let currentTrack = [];
+                let currentTrack: (Point | null)[] = [];
                 for(let j = 0; j < this.mainTrack.length; j++) {
                     // Get the mainTrack pt
                     let mainPt = this.mainTrack[j].p;
@@ -259,20 +274,19 @@ class Formation {
                 return;
             }
             agent.isInFormation = true;
-            agent.isTracking = false;
             agent.track = track;
         }
     }
     // Get the amount of distance remaining for this agent
-    getDistanceRemaining(agent_index) {
+    // Returns null if Formation isn't pathing, or the Agent isn't in formation
+    getDistanceRemaining(agent: Agent) {
         if (this.mainTrack == null) {
             return null;
         }
-        let agent = this.agents[agent_index];
         if (!agent.isInFormation) {
             return null;
         }
-        if (agent.waypoints == null) {
+        if (!agent.isPathing()) {
             return 0;
         }
         // Get the distance for the agents current path
@@ -293,20 +307,24 @@ class Formation {
 
         // Get distance remaining for each Agent, along with the minimum distance remaining
         let distanceRemainings = Array(this.agents.length);
-        let minDistanceRemaining = null;
+        let minDistanceRemaining: number | null = null;
         for(let i = 0; i < this.agents.length; i++) {
             let agent = this.agents[i];
-            if (!agent.isInFormation) {
+            let distanceRemaining = this.getDistanceRemaining(agent);
+            if (distanceRemaining == null) {
                 continue;
             }
-
-            let distanceRemaining = this.getDistanceRemaining(i);
             distanceRemainings[i] = distanceRemaining;
             minDistanceRemaining = minDistanceRemaining == null ? distanceRemaining : Math.min(minDistanceRemaining, distanceRemaining);
         }
 
         // Generate the ideal speeds for each Agent
         let idealSpeeds = Array(this.agents.length);
+        if (minDistanceRemaining == null) {
+            // If there's no agents in formation, just return
+            return idealSpeeds;
+        }
+        // Ideal speed is based on each agent's comparison to the agent that's furthest along the track
         for(let i = 0; i < this.agents.length; i++) {
             let agent = this.agents[i];
             if (!agent.isInFormation) {
@@ -361,18 +379,18 @@ class Formation {
             }
 
             // Get the status of agents at end-of-frame
-            let bestDistanceRemaining = null;
+            let bestDistanceRemaining: number | null = null;
             let numAgentsPathing = 0;
             for(let i = 0; i < this.agents.length; i++) {
                 let agent = this.agents[i];
-                if (!agent.isInFormation) {
+                let distanceRemaining = this.getDistanceRemaining(agent);
+                if (distanceRemaining == null) {
                     continue;
                 }
                 // Keep track of the most progress,
                 if (agent.isPathing()) {
                     numAgentsPathing++;
                 }
-                let distanceRemaining = this.getDistanceRemaining(i);
                 if (bestDistanceRemaining == null || distanceRemaining < bestDistanceRemaining) {
                     // Track the best track progress
                     bestDistanceRemaining = distanceRemaining;
@@ -382,18 +400,21 @@ class Formation {
             // Find the point along mainTrack that matches the most progress (bestDistanceRemaining)
             let curIdx = this.mainTrack.length - 1;
             let bestPosition = this.mainTrack[curIdx].p;
-            let lastLine = null;
-            while (bestDistanceRemaining > 0 && curIdx >= 0) {
-                let mainTrackipt = this.mainTrack[curIdx];
-                // When processing a new line, walk backwards across it
-                if (lastLine == null || lastLine !== mainTrackipt.line) {
-                    lastLine = mainTrackipt.line;
-                    let dir = lastLine[1].minus(lastLine[0]);
-                    let distTravelled = Math.min(dir.magnitude(), bestDistanceRemaining);
-                    bestPosition = lastLine[1].minus(dir.normalize().multiply(distTravelled));
-                    bestDistanceRemaining -= distTravelled;
+            // If a bestDistance exists, use it
+            if (bestDistanceRemaining != null) {
+                let lastLine: Point[] | null = null;
+                while (bestDistanceRemaining > 0 && curIdx >= 0) {
+                    let mainTrackipt = this.mainTrack[curIdx];
+                    // When processing a new line, walk backwards across it
+                    if (lastLine == null || lastLine !== mainTrackipt.line) {
+                        lastLine = mainTrackipt.line;
+                        let dir = lastLine[1].minus(lastLine[0]);
+                        let distTravelled = Math.min(dir.magnitude(), bestDistanceRemaining);
+                        bestPosition = lastLine[1].minus(dir.normalize().multiply(distTravelled));
+                        bestDistanceRemaining -= distTravelled;
+                    }
+                    curIdx--;
                 }
-                curIdx--;
             }
             // Update position of the formation, to be the mainTrack point
             // measured by the unit that has made the most progress
@@ -432,7 +453,7 @@ async function main() {
     let maxX = 0;
     let minY = 0;
     for(let face of faces) {
-        currentEdge = face.rootEdge;
+        let currentEdge = face.rootEdge;
         do {
             maxX = Math.max(maxX, currentEdge.originPoint.x);
             minY = Math.min(minY, currentEdge.originPoint.y);
@@ -453,9 +474,9 @@ async function main() {
     let formation = new Formation();
     formation.addAgents(agents);
     agents = [];
-    let lastClick = null; // Stores the Point clicked at, if a point was clicked at
-    let keysPressed = []; // Stores the keys pressed
-    function isKeyPressed(key) {
+    let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
+    let keysPressed: string[] = []; // Stores the keys pressed
+    function isKeyPressed(key: string) {
         return keysPressed.indexOf(key) > -1;
     }
 
@@ -467,7 +488,7 @@ async function main() {
     let translate = [0, 0];
     let zoom = 1;
 
-    render = async function() {
+    let render = async function() {
         frame_count++;
         if (frame_count % FRAME_DELAY_RATIO != 0) {
             window.requestAnimationFrame(render);

@@ -1,3 +1,4 @@
+import { PriorityQueue } from "data-structure-typed";
 
 /*
 ====================
@@ -5,7 +6,7 @@ Data Structures
 ====================
 */
 
-const EPSILON = 1e-13;
+export const EPSILON = 1e-13;
 
 // 32-bit FNV hash on an arbitrary buffer
 function fnv_hash(buffer) {
@@ -19,8 +20,11 @@ function fnv_hash(buffer) {
     return h;
 }
 
-class Point {
-    constructor(x, y, isCorner) {
+export class Point {
+    x;
+    y;
+    isCorner;
+    constructor(x, y, isCorner?) {
         this.x = x;
         this.y = y;
         this.isCorner = isCorner;
@@ -59,11 +63,11 @@ class Point {
 }
 
 // f=0 => p1, f=1 => p2
-function lerp(p1, p2, f) {
+export function lerp(p1, p2, f) {
     return p1.multiply(1-f).plus(p2.multiply(f));
 }
 
-class HalfEdge {
+export class HalfEdge {
     originPoint; // Origin Point of halfedge
     next; // HalfEdge
     face; // Face
@@ -76,7 +80,7 @@ class HalfEdge {
     }
 }
 
-class Face {
+export class Face {
     rootEdge; // Starting HalfEdge
     isNavigable; // Whether or not the Face is navigable
     constructor(rootEdge, isNavigable) {
@@ -111,11 +115,11 @@ Math Functions
 ====================
 */
 
-function getPointDist(p1, p2) {
+export function getPointDist(p1, p2) {
     return p1.minus(p2).magnitude();
 }
 
-function getIntersection(seg1, seg2) {
+export function getIntersection(seg1, seg2) {
     const x1 = seg1[0].x;
     const y1 = seg1[0].y;
     const x2 = seg1[1].x;
@@ -139,14 +143,14 @@ function getIntersection(seg1, seg2) {
 }
 
 // Positive is CCW, Negative is CW. 0 is Degenerate
-function getTriangleSign(v1, v2, v3) {
+export function getTriangleSign(v1, v2, v3) {
     return (v2.x - v1.x) * (v3.y - v1.y) - (v2.y - v1.y) * (v3.x - v1.x);
 }
 
 // https://stackoverflow.com/questions/217578/how-can-i-determine-whether-a-2d-point-is-within-a-polygon
 // NOTE: This function only works with convex faces
 // Return 1 if inside, 0 if on boundary, -1 if on outside
-function isPointInFace(face, p) {
+export function isPointInFace(face, p) {
     let count = 0;
     let currentEdge = face.rootEdge;
 
@@ -191,11 +195,11 @@ Mesh Functions
 
 function makeConvex(faces) {
     throw "Unimplemented Error";
-    let newFaces = [];
+    let newFaces: Face[] = [];
     for(let face of faces) {
         console.log('Handling Face:', face);
-        currentEdge = face.rootEdge;
-        i = 0;
+        let currentEdge = face.rootEdge;
+        let i = 0;
         do {
             i++;
             if (i == 100) {
@@ -214,7 +218,7 @@ function makeConvex(faces) {
                 Ein.next = e2;
                 e3.next = Ein;
                 let newFace = new Face(e2, true);
-                ctx.drawFace(newFace);
+                //ctx.drawFace(newFace);
                 // Insert Eout into the edgelist
                 let Eout = new HalfEdge(e2.originPoint);
                 e1.next = Eout;
@@ -411,15 +415,21 @@ function mergeAllFaces_naive(faces) {
     mergeCollinearEdges(faces);
 }
 
-function mergeAllFaces(faces) {
+export function mergeAllFaces(faces) {
     // meshmerger.cpp:smart_merge
 
     // Tracks the last face push into pq,
     // So we can check if a pq element is fresh
-    face_to_index = new Map();
+    let face_to_index = new Map();
 
     // priority-largest queue
-    let pq = new PriorityQueue((a, b) => a['total_area'] > b['total_area']);
+    interface PQType {
+        face;
+        edge;
+        totalArea: number;
+        index;
+    }
+    let pq = new PriorityQueue<PQType>({comparator: (a, b) => b['totalArea'] - a['totalArea']});
 
     function pushFace(face) {
         let currentArea = face.getArea();
@@ -448,10 +458,10 @@ function mergeAllFaces(faces) {
         // Push to the pq, including the index
         face_to_index.set(face, nextFaceIndex);
         if (bestMergeArea != null) {
-            pq.push({
+            pq.add({
                 'face': face,
                 'edge': bestMergeEdge,
-                'total_area': bestMergeArea,
+                'totalArea': bestMergeArea,
                 'index': nextFaceIndex,
             });
         }
@@ -464,9 +474,9 @@ function mergeAllFaces(faces) {
     }
     
     // Merge faces while still possible
-    while (pq.size() > 0) {
+    while (!pq.isEmpty()) {
         // Get a top that hasn't been marked stale
-        let top = pq.pop();
+        let top = pq.poll()!;
         if (top['index'] != face_to_index.get(top['face'])) {
             continue;
         }
@@ -500,7 +510,7 @@ function mergeAllFaces(faces) {
     mergeCollinearEdges(faces);
 }
 
-function markCorners(faces) {
+export function markCorners(faces) {
     // Mark Corners
     for(let face of faces) {
         let currentEdge = face.rootEdge;
@@ -526,7 +536,7 @@ function markCorners(faces) {
 }
 
 // Find any invalid faces, by checking .twin and <10k edges
-function findBadFace(faces) {
+export function findBadFace(faces) {
     const MAX_EDGES = 10000;
     for(let face of faces) {
         let i = 0;

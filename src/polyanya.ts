@@ -1,10 +1,16 @@
+import { Point, Face, getPointDist, getTriangleSign, getIntersection, isPointInFace } from "./math";
+import { PriorityQueue } from "data-structure-typed";
+
 class SearchNode {
     startPoint; // Point
     endPoint; // Point
     halfedge; // HalfEdge
     root; // Point
-    g; // float
-    f; // float | null
+    g; // number
+    f; // number | null
+    prevSearchNode; // searchNode | null
+    intermediateNode; // searchNode | null
+    TESTMARKER = -1; // number
     constructor(startPoint, endPoint, halfedge, root, g, prevSearchNode) {
         this.startPoint = startPoint;
         this.endPoint = endPoint;
@@ -19,7 +25,7 @@ class SearchNode {
             return this.f;
         }
         let g = this.g;
-        let h = null;
+        let h;
         if (getTriangleSign(this.root, this.startPoint, this.endPoint) == 0) {
             // If the edge is collinear to the root, just go through the closer point to dst
             let closerPoint = getPointDist(this.root, this.startPoint) < getPointDist(this.root, this.endPoint) ? this.startPoint : this.endPoint;
@@ -69,7 +75,8 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
                 return edgeLine;
             }
             if (endOrientation > 0 && startOrientation < 0) {
-                let intersection = getIntersection([root, other], edgeLine);
+                // TODO: Remove !
+                let intersection = getIntersection([root, other], edgeLine)!;
                 intersection.isCorner = false;
                 return [intersection, edgeLine[1]];
             }
@@ -85,7 +92,8 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
                 return edgeLine;
             }
             if (startOrientation < 0 && endOrientation > 0) {
-                let intersection = getIntersection([root, other], edgeLine);
+                // TODO: Remove !
+                let intersection = getIntersection([root, other], edgeLine)!;
                 intersection.isCorner = false;
                 return [edgeLine[0], intersection];
             }
@@ -99,7 +107,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
         console.error('All Cases Covered!', root, other, edgeLine, checkCW, startOrientation, endOrientation, getTriangleSign(root, edgeLine[0], edgeLine[1]));
     }
 
-    let successors = [];
+    let successors: SearchNode[] = [];
     // If there's no twin for this halfedge, then there are no successors
     if (searchNode.halfedge.twin == null) {
         return [];
@@ -111,7 +119,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
         let startSign = getTriangleSign(searchNode.root, searchNode.startPoint, dst);
         let endSign = getTriangleSign(searchNode.root, searchNode.endPoint, dst);
         // Construct Path
-        let path = [];
+        let path: Point[] = [];
         let finalG = null;
         if (startSign >= 0 && endSign <= 0) {
             path.push(dst);
@@ -128,7 +136,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             finalG = searchNode.g + getPointDist(searchNode.root, searchNode.startPoint) + getPointDist(searchNode.startPoint, dst);
         }
         // If there was no valid case, we just return
-        if (path.length == 0) {
+        if (finalG == null) {
             return [];
         }
         // Reconstruct previous path
@@ -287,10 +295,15 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
     return successors;
 }
 
-async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
+interface ValidBestPath {
+    distance: number;
+    path: Point[];
+}
+
+export async function polyanya(faces, src, dst, max_dist=undefined): Promise<ValidBestPath | null> { // Point, Point
     // Get Src + Dst Face
-    let dstFace = null;
-    let srcFace = null;
+    let dstFace: Face | null = null;
+    let srcFace: Face | null = null;
     // TODO: Optimize with R-Tree
     for(let face of faces) {
         if (srcFace == null && isPointInFace(face, src) >= 0) {
@@ -318,7 +331,11 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
     }
 
     // The pq to hold all polyanya search nodes
-    let pq = new PriorityQueue((a, b) => a['f'] < b['f']);
+    interface PQType {
+        f: number,
+        searchNode: SearchNode,
+    }
+    let pq = new PriorityQueue<PQType>({comparator: (a, b) => a['f'] - b['f']});
     // Push node into pq, filtering it out if it can't be valid,
     // passthrough=true returns the node rather than putting it into the pq
     function pushNode(newSearchNode, passthrough=false) {
@@ -331,7 +348,7 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
                 if (passthrough) {
                     return newSearchNode;
                 } else {
-                    pq.push({
+                    pq.add({
                         'searchNode': newSearchNode,
                         'f': f,
                     });
@@ -342,7 +359,7 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
     }
 
     // Initialize starting search nodes, by going from src to each edge of srcFace
-    currentEdge = srcFace.rootEdge;
+    let currentEdge = srcFace.rootEdge;
     do {
         let newSearchNode = new SearchNode(currentEdge.originPoint, currentEdge.next.originPoint, currentEdge, src, 0, null);
         newSearchNode.TESTMARKER = 0;
@@ -351,22 +368,22 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
     } while (currentEdge != srcFace.rootEdge);
 
     // Run the search loop
-    i = 0;
+    let i = 0;
     let bestPath = {
-        'distance': null,
-        'path': null,
+        'distance': null as number | null,
+        'path': [] as Point[],
     };
     let root_to_g = {};
     let nextSearchNode = null;
     const MAX_ITERATIONS = 500000;
-    while(pq.size() > 0) {
+    while(!pq.isEmpty()) {
         if (i == MAX_ITERATIONS) {
             console.error('Max Iterations Reached!');
             break;
         }
-        let curSearchNode = null;
+        let curSearchNode;
         if (nextSearchNode == null) {
-            curSearchNode = pq.pop()['searchNode'];
+            curSearchNode = pq.poll()!['searchNode'];
         } else {
             curSearchNode = nextSearchNode;
             nextSearchNode = null;
@@ -402,5 +419,9 @@ async function polyanya(faces, src, dst, max_dist=undefined) { // Point, Point
 
     // Return null if no path found
     //console.log('Best Path:', bestPath);
-    return bestPath['path'] == null ? null : bestPath;
+    if (bestPath['distance'] == null) {
+        return null;
+    } else {
+        return bestPath as ValidBestPath;
+    }
 }

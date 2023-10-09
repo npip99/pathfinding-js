@@ -1,13 +1,13 @@
-function hungarian(costMatrix) {
+export function hungarian(costMatrix: number[][]): number[] {
     // Helper function to create an array of zeros
-    let createArray = (length) => [...Array(length)].map(() => 0);
+    let createArray = (length: number) => [...Array(length)].map(() => 0);
 
     // Add a row and a column of zeros at the beginning of the matrix
     let numRows = costMatrix.length;
     let numCols = costMatrix[0].length;
-    let matrix = createArray(numRows+1);
+    let matrix: number[][] = [];
     for(let r = 0; r <= numRows; r++) {
-        matrix[r] = createArray(numCols+1);
+        matrix.push(createArray(numCols+1));
         for(let c = 0; c <= numCols; c++) {
             if (r == 0 || c == 0) {
                 matrix[r][c] = 0;
@@ -78,14 +78,14 @@ function hungarian(costMatrix) {
     // Return the permutation array p, but removing the padded 0's
     let adjustedP = p.slice(1).map((val) => val - 1);
     // Flip the permutation array so that it maps A to B
-    let finalP = Array(numRows);
+    let finalP = createArray(numRows);
     for(let i = 0; i < numRows; i++) {
         finalP[adjustedP[i]] = i;
     }
     return finalP;
 }
 
-function testHungarian() {
+/*function testHungarian() {
     const A = [new Point(36.22, -10.15), new Point(36.175, -8.15), new Point(36.19, -9.15), new Point(36.129, -6.15), new Point(36.152, -7.15)];
     const B = [new Point(36.03, -6.16), new Point(36.10, -7.16), new Point(36.175, -8.158), new Point(36.246, -9.15), new Point(36.317, -10.15)];
     const costMatrix = [];
@@ -101,4 +101,4 @@ function testHungarian() {
     console.log('Cost:', costMatrix);
     const mapping = hungarian(costMatrix);
     console.log('Mapping:', mapping); // Array representing the mapping of source points to destination points
-}
+}*/

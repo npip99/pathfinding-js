@@ -1,3 +1,4 @@
+import {Point, HalfEdge, Face} from "./math";
 
 /*
 ====================
@@ -5,12 +6,16 @@ Helper Utilities
 ====================
 */
 
-async function getUrlContents(url) {
+async function getUrlContents(url: string) {
     let result = await fetch(url)
         .then(response => response.text())
         .catch(error => {
             console.error('Error:', error);
+            return null;
         });
+    if (result === null) {
+        return null;
+    }
     if (url.includes('pastebin')) {
         result = result.replace(/\r/g, '');
     }
@@ -24,7 +29,7 @@ Mesh Loading
 */
 
 // Example Poly Data
-const poly_data_1 = [
+export const poly_data_1 = [
     [[0, 0], [0, 70], [45, 100], [120, 25], [120, 0]],
     [[120, 25], [45, 100], [45, 120], [90, 170], [190, 120], [290, 25], [190, 25]],
     [[45, 120], [20, 120], [20, 145], [45, 170], [90, 170]],
@@ -34,7 +39,7 @@ const poly_data_1 = [
     [[190, 25], [290, 25], [290, 0], [190, 0]],
     [[190, 200], [340, 200], [340, 150], [310, 150]],
 ];
-const poly_data_2 = [
+export const poly_data_2 = [
     [[0, 0], [0, 70], [45, 100], [120, 25], [120, 0]],
     [[120, 25], [45, 100], [45, 120], [90, 170], [190, 120], [290, 25], [190, 25]],
     [[45, 120], [20, 120], [20, 145], [45, 170], [90, 170]],
@@ -44,7 +49,7 @@ const poly_data_2 = [
     [[190, 25], [290, 25], [290, 0], [190, 0]],
     [[300, 160], [340, 200], [340, 150], [310, 150]],
 ];
-const poly_data_3 = [
+export const poly_data_3 = [
     [[10, 10], [20, 20], [20, 10]],
     [[10, 30], [30, 20], [25, 20], [20, 20]],
     [[25, 10], [25, 20], [30, 20], [40, 20], [40, 10]],
@@ -55,12 +60,12 @@ const poly_data_3 = [
 ];
 
 // Return a list of faces, from raw poly data
-function LoadPolyData(poly_data) {
-    let faces = [];
+export function LoadPolyData(poly_data) {
+    let faces: Face[] = [];
     let point_hashes_to_point = {}
     let halfedge_hashes_to_halfedge = {}
     for(let poly_datum of poly_data) {
-        let halfedges = [];
+        let halfedges: HalfEdge[] = [];
         for(let i = 0; i < poly_datum.length; i++) {
             let u = poly_datum[i];
             let p = new Point(u[0], -u[1], false);
@@ -95,11 +100,11 @@ function LoadPolyData(poly_data) {
     return faces;
 }
 
-function LoadMaze(maze_string, max_size) {
+export function LoadMaze(maze_string, max_size) {
     maze_string = maze_string.trim();
     let currentRowIndex = -1;
-    let maze = [];
-    let currentRow = [];
+    let maze: boolean[][] = [];
+    let currentRow: boolean[] = [];
     for(let c of maze_string) {
         if (c == '\n') {
             maze.push(currentRow);
@@ -110,7 +115,7 @@ function LoadMaze(maze_string, max_size) {
         }
     }
 
-    let poly_data = [];
+    let poly_data: number[][][] = [];
     for(let r = 0; r < maze.length; r++) {
         for(let c = 0; c < maze[r].length; c++) {
             if (maze[r][c] && (max_size === undefined || (r <= max_size && c <= max_size))) {
@@ -127,28 +132,28 @@ function LoadMaze(maze_string, max_size) {
 }
 
 // Mesh must be loaded from url, as its too large of a string
-async function LoadMesh(url) {
+export async function LoadMesh(url) {
     let result = await getUrlContents(url);
+    if (result === null) {
+        return result;
+    }
     let lines = result.split('\n');
     if (lines[0] != 'mesh' || lines[1] != '2') {
         return null;
     }
-    verts_polys = lines[2].split(' ');
-    num_verts = Number(verts_polys[0]);
-    num_polys = Number(verts_polys[1]);
-    let verts = [];
+    let verts_polys = lines[2].split(' ');
+    let num_verts = Number(verts_polys[0]);
+    let num_polys = Number(verts_polys[1]);
+    let verts: number[][] = [];
     for(let i = 0; i < num_verts; i++) {
         let vert_line = lines[3+i];
         let s_verts = vert_line.split(' ');
         verts.push([Number(s_verts[0]), Number(s_verts[1])]);
     }
-    let polys = [];
+    let polys: number[][][] = [];
     for(let i = 0; i < num_polys; i++) {
-        let poly = [];
-        let poly_data = lines[3+num_verts+i].split(' ');
-        for(let i = 0; i < poly_data.length; i++) {
-            poly_data[i] = Number(poly_data[i]);
-        }
+        let poly: number[][] = [];
+        let poly_data = lines[3+num_verts+i].split(' ').map(Number);
         let num_poly_verts = poly_data[0];
         for(let i = 0; i < num_poly_verts; i++) {
             let poly_vert_index = poly_data[1+i];

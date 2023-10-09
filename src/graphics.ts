@@ -1,16 +1,16 @@
 // Graphics Code
 
-const canvas = document.getElementById('myCanvas');
-const ctx = canvas.getContext('2d');
-const SCALE = 18;
+export const canvas = document.getElementById('myCanvas') as HTMLCanvasElement;
+export const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+export const SCALE = 18;
 
-function setCanvasDimensions(width, height) {
+export function setCanvasDimensions(width, height) {
     canvas.width = width;
     canvas.height = height;
 }
 
 // Map x,y from the canvas, to their transformed versions
-function getTransformedCoordinates(x, y) {
+export function getTransformedCoordinates(x, y) {
     let transform = ctx.getTransform().inverse();
     let pt = transform.transformPoint(new DOMPoint(x, y));
     return {
@@ -19,7 +19,7 @@ function getTransformedCoordinates(x, y) {
     };
 }
 
-function drawSegment(p1, p2, color) {
+export function drawSegment(p1, p2, color) {
     if (color !== undefined) {
         ctx.strokeStyle = color;
     }
@@ -29,14 +29,14 @@ function drawSegment(p1, p2, color) {
     ctx.stroke();
 }
 
-function drawPoint(p, color=undefined, radius=5) {
+export function drawPoint(p, color?: string, radius=5) {
     if (color !== undefined) {
         ctx.fillStyle = color;
     }
     ctx.fillRect(SCALE*p.x-Math.floor(radius/2), -SCALE*p.y-Math.floor(radius/2), radius, radius);
 }
 
-function drawSearchNode(searchNode, color) {
+export function drawSearchNode(searchNode, color?: string) {
     if (color !== undefined) {
         ctx.fillStyle = color;
     }
@@ -49,9 +49,9 @@ function drawSearchNode(searchNode, color) {
     ctx.fill();
 }
 
-function drawFace(face, fillColor) {
+export function drawFace(face, fillColor) {
     ctx.beginPath();
-    currentEdge = face.rootEdge;
+    let currentEdge = face.rootEdge;
     ctx.moveTo(SCALE*currentEdge.originPoint.x, -SCALE*currentEdge.originPoint.y);
     do {
         currentEdge = currentEdge.next;
@@ -66,7 +66,7 @@ function drawFace(face, fillColor) {
     ctx.stroke();
 }
 
-function drawPath(path, lineWidth) {
+export function drawPath(path, lineWidth?: number) {
     ctx.lineWidth = lineWidth === undefined ? 1 : lineWidth;
     ctx.strokeStyle = 'purple';
     ctx.beginPath();
