@@ -81,7 +81,7 @@ export class Agent {
         if (this.position.minus(this.curTarget).magnitude() < EPSILON) {
             this.position = this.curTarget;
             this.curTarget = null;
-            this.updateTarget(maxPathDist);
+            await this.updateTarget();
         }
     }
     // Iterate the vec
