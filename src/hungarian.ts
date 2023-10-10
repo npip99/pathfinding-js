@@ -64,7 +64,7 @@ export function hungarian(costMatrix: number[][]): number[] {
                 }
             }
 
-            j0 = j1;
+            j0 = j1 || 0;
         } while (p[j0] !== 0);
 
         // Step 5: Update the permutation array p
@@ -85,14 +85,14 @@ export function hungarian(costMatrix: number[][]): number[] {
     return finalP;
 }
 
-/*function testHungarian() {
-    const A = [new Point(36.22, -10.15), new Point(36.175, -8.15), new Point(36.19, -9.15), new Point(36.129, -6.15), new Point(36.152, -7.15)];
-    const B = [new Point(36.03, -6.16), new Point(36.10, -7.16), new Point(36.175, -8.158), new Point(36.246, -9.15), new Point(36.317, -10.15)];
+function testHungarian() {
+    const A = [[36.22, -10.15], [36.175, -8.15], [36.19, -9.15], [36.129, -6.15], [36.152, -7.15]];
+    const B = [[36.03, -6.16], [36.10, -7.16], [36.175, -8.158], [36.246, -9.15], [36.317, -10.15]];
     const costMatrix = [];
     for (let i = 0; i < A.length; i++) {
         const row = [];
         for (let j = 0; j < B.length; j++) {
-            row.push(Math.pow(getPointDist(A[i], B[j]), 2));
+            row.push(Math.pow(A[i][0] - B[j][0], 2) + Math.pow(A[i][1] - B[j][0], 2));
             console.log(A[i], B[j], i, j, row[j]);
         }
         costMatrix.push(row);
@@ -100,5 +100,6 @@ export function hungarian(costMatrix: number[][]): number[] {
 
     console.log('Cost:', costMatrix);
     const mapping = hungarian(costMatrix);
-    console.log('Mapping:', mapping); // Array representing the mapping of source points to destination points
-}*/
+    // Array representing the mapping of source points to destination points
+    console.log('Mapping:', mapping);
+}

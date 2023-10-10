@@ -1,17 +1,17 @@
-import { Point, Face, getPointDist, getTriangleSign, getIntersection, isPointInFace } from "./math";
+import { Point, Face, getPointDist, getTriangleSign, getIntersection, isPointInFace, HalfEdge } from "./math";
 import { PriorityQueue } from "data-structure-typed";
 
 class SearchNode {
-    startPoint; // Point
-    endPoint; // Point
-    halfedge; // HalfEdge
-    root; // Point
-    g; // number
-    f; // number | null
-    prevSearchNode; // searchNode | null
-    intermediateNode; // searchNode | null
-    TESTMARKER = -1; // number
-    constructor(startPoint, endPoint, halfedge, root, g, prevSearchNode) {
+    startPoint: Point; // Point
+    endPoint: Point; // Point
+    halfedge: HalfEdge; // HalfEdge
+    root: Point; // Point
+    g: number; // number
+    f: number | null; // number | null
+    prevSearchNode: SearchNode | null; // searchNode | null
+    intermediatePoint: Point | null; // searchNode | null
+    TESTMARKER: number = -1; // number
+    constructor(startPoint: Point, endPoint: Point, halfedge: HalfEdge, root: Point, g: number, prevSearchNode: SearchNode | null) {
         this.startPoint = startPoint;
         this.endPoint = endPoint;
         this.halfedge = halfedge;
@@ -19,8 +19,9 @@ class SearchNode {
         this.g = g;
         this.f = null;
         this.prevSearchNode = prevSearchNode;
+        this.intermediatePoint = null;
     }
-    getF(dst) {
+    getF(dst: Point) {
         if (this.f != null) {
             return this.f;
         }
@@ -47,8 +48,66 @@ class SearchNode {
     }
 };
 
-function getSuccessors(searchNode, dst, dstFace, bestPath) {
-    function getPastSegment(root, other, edgeLine, checkCW) {
+// A Polyanya path a sequence of points starting at src and ending at dst,
+// Where the path does not intersect the interior of any obstacle
+interface PolyanyaPath {
+    path: Point[];
+    // Total distance of this path
+    distance: number;
+    // Terminal SearchNode
+    searchNode: SearchNode | null;
+}
+
+// Get the path on a terminal searchNode
+// Requires searchNode.halfedge.twin!.face == dstFace
+function getTerminalPath(searchNode: SearchNode, dst: Point): PolyanyaPath | null {
+    let startSign = getTriangleSign(searchNode.root, searchNode.startPoint, dst);
+    let endSign = getTriangleSign(searchNode.root, searchNode.endPoint, dst);
+    // Construct Path
+    let path: Point[] = [];
+    let finalG = null;
+    if (startSign >= 0 && endSign <= 0) {
+        path.push(dst);
+        finalG = searchNode.g + getPointDist(searchNode.root, dst);
+    }
+    if (searchNode.endPoint.isCorner && endSign > 0) {
+        path.push(dst);
+        path.push(searchNode.endPoint);
+        finalG = searchNode.g + getPointDist(searchNode.root, searchNode.endPoint) + getPointDist(searchNode.endPoint, dst);
+    }
+    if (searchNode.startPoint.isCorner && startSign < 0) {
+        path.push(dst);
+        path.push(searchNode.startPoint);
+        finalG = searchNode.g + getPointDist(searchNode.root, searchNode.startPoint) + getPointDist(searchNode.startPoint, dst);
+    }
+    // If there was no valid case, we just return
+    if (finalG == null) {
+        return null;
+    }
+    // Reconstruct previous path
+    let curSearchNode: SearchNode | null = searchNode;
+    while(curSearchNode != null) {
+        // If the root has changed, store the new root
+        if (curSearchNode.root != path[path.length-1]) {
+            path.push(curSearchNode.root);
+        }
+        // If there was an intermediatePoint, store it
+        if(curSearchNode.intermediatePoint !== null) {
+            path.push(curSearchNode.intermediatePoint);
+        }
+        curSearchNode = curSearchNode.prevSearchNode;
+    }
+    // Reverse Path
+    path = path.reverse();
+    return {
+        path: path,
+        distance: finalG,
+        searchNode: searchNode,
+    };
+}
+
+function getSuccessors(searchNode: SearchNode, dst: Point) {
+    function getPastSegment(root: Point, other: Point, edgeLine: Point[], checkCW: boolean): Point[] | null {
         // Get orientation of projecting root->other onto the edgeLine
         let startOrientation = getTriangleSign(root, other, edgeLine[0]);
         let endOrientation = getTriangleSign(root, other, edgeLine[1]);
@@ -76,7 +135,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             }
             if (endOrientation > 0 && startOrientation < 0) {
                 // TODO: Remove !
-                let intersection = getIntersection([root, other], edgeLine)!;
+                let intersection = getIntersection(root, other, edgeLine[0], edgeLine[1])!;
                 intersection.isCorner = false;
                 return [intersection, edgeLine[1]];
             }
@@ -93,7 +152,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             }
             if (startOrientation < 0 && endOrientation > 0) {
                 // TODO: Remove !
-                let intersection = getIntersection([root, other], edgeLine)!;
+                let intersection = getIntersection(root, other, edgeLine[0], edgeLine[1])!;
                 intersection.isCorner = false;
                 return [edgeLine[0], intersection];
             }
@@ -105,63 +164,11 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             }
         }
         console.error('All Cases Covered!', root, other, edgeLine, checkCW, startOrientation, endOrientation, getTriangleSign(root, edgeLine[0], edgeLine[1]));
+        return null;
     }
 
+    // The successors to accumulate
     let successors: SearchNode[] = [];
-    // If there's no twin for this halfedge, then there are no successors
-    if (searchNode.halfedge.twin == null) {
-        return [];
-    }
-    // Else, loop through all of the edges in the opposite face
-    let otherFace = searchNode.halfedge.twin.face;
-    // Check straight to destination if that's a possible successor
-    if (otherFace == dstFace) {
-        let startSign = getTriangleSign(searchNode.root, searchNode.startPoint, dst);
-        let endSign = getTriangleSign(searchNode.root, searchNode.endPoint, dst);
-        // Construct Path
-        let path: Point[] = [];
-        let finalG = null;
-        if (startSign >= 0 && endSign <= 0) {
-            path.push(dst);
-            finalG = searchNode.g + getPointDist(searchNode.root, dst);
-        }
-        if (searchNode.endPoint.isCorner && endSign > 0) {
-            path.push(dst);
-            path.push(searchNode.endPoint);
-            finalG = searchNode.g + getPointDist(searchNode.root, searchNode.endPoint) + getPointDist(searchNode.endPoint, dst);
-        }
-        if (searchNode.startPoint.isCorner && startSign < 0) {
-            path.push(dst);
-            path.push(searchNode.startPoint);
-            finalG = searchNode.g + getPointDist(searchNode.root, searchNode.startPoint) + getPointDist(searchNode.startPoint, dst);
-        }
-        // If there was no valid case, we just return
-        if (finalG == null) {
-            return [];
-        }
-        // Reconstruct previous path
-        let curSearchNode = searchNode;
-        while(curSearchNode != null) {
-            // If the root has changed, store the new root
-            if (curSearchNode.root != path[path.length-1]) {
-                path.push(curSearchNode.root);
-            }
-            // If there was an intermediateNode, store it
-            if(curSearchNode.intermediateNode !== undefined) {
-                path.push(curSearchNode.intermediateNode);
-            }
-            curSearchNode = curSearchNode.prevSearchNode;
-        }
-        // Reverse Path
-        path = path.reverse();
-        if (bestPath['distance'] == null || finalG < bestPath['distance']) {
-            bestPath['distance'] = finalG;
-            bestPath['path'] = path;
-            bestPath['searchNode'] = searchNode;
-        }
-        // No further successors, as we already made it to the dst
-        return [];
-    }
 
     // Check if the searchNode is degenerate (root is on [startPoint, endPoint])
     // NOTE: Is this guaranteed true when root is on startPoint/endPoint? Or should we check explicitly
@@ -170,7 +177,8 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
     //       to be negative (Implying CW). Handle this better?
 
     // Otherwise, go through the edges of the opposite face
-    let currentEdge = otherFace.rootEdge;
+    let oppositeFace = searchNode.halfedge.twin!.face!;
+    let currentEdge = oppositeFace.rootEdge;
     do {
         // Get the processing edge and update the current iteration edge
         let processingEdge = currentEdge;
@@ -256,7 +264,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
                 let newSearchNode = new SearchNode(pastEndCCW[0], pastEndCCW[1], processingEdge, nextRoot, newG, searchNode);
                 newSearchNode.TESTMARKER = 5;
                 if (nextRoot != searchNode.endPoint) {
-                    newSearchNode.intermediateNode = searchNode.endPoint;
+                    newSearchNode.intermediatePoint = searchNode.endPoint;
                 }
                 successors.push(newSearchNode);
                 //drawSegment(pastEndCCW[0], pastEndCCW[1], 'green');
@@ -271,7 +279,7 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
                 let newSearchNode = new SearchNode(pastStartCW[0], pastStartCW[1], processingEdge, nextRoot, newG, searchNode);
                 newSearchNode.TESTMARKER = 5.5;
                 if (nextRoot != searchNode.startPoint) {
-                    newSearchNode.intermediateNode = searchNode.startPoint;
+                    newSearchNode.intermediatePoint = searchNode.startPoint;
                 }
                 successors.push(newSearchNode);
                 //drawSegment(pastStartCW[0], pastStartCW[1], 'blue');
@@ -290,17 +298,12 @@ function getSuccessors(searchNode, dst, dstFace, bestPath) {
             successors.push(newSearchNode);
             //drawSegment(subSegment[0], subSegment[1], 'red');
         }
-    } while(currentEdge != otherFace.rootEdge);
+    } while(currentEdge != oppositeFace.rootEdge);
     // Return the successors
     return successors;
 }
 
-interface ValidBestPath {
-    distance: number;
-    path: Point[];
-}
-
-export async function polyanya(faces, src, dst, max_dist=undefined): Promise<ValidBestPath | null> { // Point, Point
+export async function polyanya(faces: Face[], src: Point, dst: Point, maxDist?: number): Promise<PolyanyaPath | null> { // Point, Point
     // Get Src + Dst Face
     let dstFace: Face | null = null;
     let srcFace: Face | null = null;
@@ -325,33 +328,27 @@ export async function polyanya(faces, src, dst, max_dist=undefined): Promise<Val
     // Check if a direct path from within the same face is possible
     if (srcFace == dstFace) {
         return {
-            'distance': getPointDist(src, dst),
-            'path': [src, dst],
+            path: [src, dst],
+            distance: getPointDist(src, dst),
+            searchNode: null,
         };
     }
 
     // The pq to hold all polyanya search nodes
-    interface PQType {
-        f: number,
-        searchNode: SearchNode,
-    }
-    let pq = new PriorityQueue<PQType>({comparator: (a, b) => a['f'] - b['f']});
+    let pq = new PriorityQueue<SearchNode>({comparator: (a, b) => a.getF(dst) - b.getF(dst)});
     // Push node into pq, filtering it out if it can't be valid,
     // passthrough=true returns the node rather than putting it into the pq
-    function pushNode(newSearchNode, passthrough=false) {
+    function pushNode(newSearchNode: SearchNode, passthrough=false) {
         // If there's a face on the other side to continue exploring, explore it
         // TODO: Don't count cul-de-sacs that don't contain the dst
         if (newSearchNode.halfedge.twin != null) {
-            // Push to pq, as long as node isn't dead from max_dist
+            // Push to pq, as long as node isn't dead from maxDist
             let f = newSearchNode.getF(dst);
-            if (max_dist === undefined || f < max_dist) {
+            if (maxDist === undefined || f < maxDist) {
                 if (passthrough) {
                     return newSearchNode;
                 } else {
-                    pq.add({
-                        'searchNode': newSearchNode,
-                        'f': f,
-                    });
+                    pq.add(newSearchNode);
                 }
             }
         }
@@ -369,59 +366,69 @@ export async function polyanya(faces, src, dst, max_dist=undefined): Promise<Val
 
     // Run the search loop
     let i = 0;
-    let bestPath = {
-        'distance': null as number | null,
-        'path': [] as Point[],
-    };
-    let root_to_g = {};
-    let nextSearchNode = null;
+    let bestPath: PolyanyaPath | null = null;
+    let rootToG = new Map<number, number>();
+    let nextSearchNode: SearchNode | null = null;
     const MAX_ITERATIONS = 500000;
     while(!pq.isEmpty()) {
         if (i == MAX_ITERATIONS) {
             console.error('Max Iterations Reached!');
             break;
         }
+
+        // Get the current SearchNode of this iteration
         let curSearchNode;
         if (nextSearchNode == null) {
-            curSearchNode = pq.poll()!['searchNode'];
+            curSearchNode = pq.poll()!;
         } else {
             curSearchNode = nextSearchNode;
             nextSearchNode = null;
         }
-        let rootHash = curSearchNode.root.hash();
+        // searchNode shouldn't be in the pq if its halfedge doesn't have a twin
+        console.assert(curSearchNode.halfedge.twin != null);
+
         // If this g is > the last recorded g from that root, skip because it's worse
-        if (root_to_g[rootHash] !== undefined && curSearchNode.g > root_to_g[rootHash]) {
+        let rootHash = curSearchNode.root.hash();
+        let rootG = rootToG.get(rootHash);
+        if (rootG !== undefined && curSearchNode.g > rootG) {
             continue;
         }
-        root_to_g[rootHash] = curSearchNode.g;
+        rootToG.set(rootHash, curSearchNode.g);
+
         // If this path can't possibly be better than the bestPath, just give up
-        if (bestPath['distance'] != null && curSearchNode.getF() >= bestPath['distance']) {
+        if (bestPath != null && curSearchNode.getF(dst) >= bestPath.distance) {
             continue;
         }
         // If there's a max dist and this search node exceeds it, give up
-        if (max_dist !== undefined && curSearchNode.getF() > max_dist) {
+        if (maxDist !== undefined && curSearchNode.getF(dst) > maxDist) {
             continue;
         }
-        // Get the successors and save them for next iterations
-        let successors = getSuccessors(curSearchNode, dst, dstFace, bestPath);
-        if (successors.length == 1) {
-            // Just immediately process the successor if there's just one
-            nextSearchNode = pushNode(successors[0], true);
+
+        // If the searchNode is Terminal,
+        if (curSearchNode.halfedge.twin!.face! == dstFace) {
+            // Check that path against the bestPath
+            let curPath = getTerminalPath(curSearchNode, dst);
+            if (curPath != null && (bestPath == null || curPath.distance < bestPath.distance)) {
+                bestPath = curPath;
+            }
         } else {
-            // Push all of the successors if there are many
-            for(let successor of successors) {
-                pushNode(successor);
+            // Otherwise, Get the successors and save them for next iterations
+            let successors = getSuccessors(curSearchNode, dst);
+            if (successors.length == 1) {
+                // Just immediately process the successor if there's just one
+                nextSearchNode = pushNode(successors[0], true);
+            } else {
+                // Push all of the successors if there are many
+                for(let successor of successors) {
+                    pushNode(successor);
+                }
             }
         }
         i += 1;
     }
     //console.log('Num Iters:', i);
 
-    // Return null if no path found
     //console.log('Best Path:', bestPath);
-    if (bestPath['distance'] == null) {
-        return null;
-    } else {
-        return bestPath as ValidBestPath;
-    }
+    // Returns null if no path found
+    return bestPath;
 }

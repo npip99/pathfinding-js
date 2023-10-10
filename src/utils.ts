@@ -29,7 +29,7 @@ Mesh Loading
 */
 
 // Example Poly Data
-export const poly_data_1 = [
+export const polyData1 = [
     [[0, 0], [0, 70], [45, 100], [120, 25], [120, 0]],
     [[120, 25], [45, 100], [45, 120], [90, 170], [190, 120], [290, 25], [190, 25]],
     [[45, 120], [20, 120], [20, 145], [45, 170], [90, 170]],
@@ -39,7 +39,7 @@ export const poly_data_1 = [
     [[190, 25], [290, 25], [290, 0], [190, 0]],
     [[190, 200], [340, 200], [340, 150], [310, 150]],
 ];
-export const poly_data_2 = [
+export const polyData2 = [
     [[0, 0], [0, 70], [45, 100], [120, 25], [120, 0]],
     [[120, 25], [45, 100], [45, 120], [90, 170], [190, 120], [290, 25], [190, 25]],
     [[45, 120], [20, 120], [20, 145], [45, 170], [90, 170]],
@@ -49,7 +49,7 @@ export const poly_data_2 = [
     [[190, 25], [290, 25], [290, 0], [190, 0]],
     [[300, 160], [340, 200], [340, 150], [310, 150]],
 ];
-export const poly_data_3 = [
+export const polyData3 = [
     [[10, 10], [20, 20], [20, 10]],
     [[10, 30], [30, 20], [25, 20], [20, 20]],
     [[25, 10], [25, 20], [30, 20], [40, 20], [40, 10]],
@@ -60,19 +60,20 @@ export const poly_data_3 = [
 ];
 
 // Return a list of faces, from raw poly data
-export function LoadPolyData(poly_data) {
+export function loadPolyData(polyData: number[][][]) {
     let faces: Face[] = [];
-    let point_hashes_to_point = {}
-    let halfedge_hashes_to_halfedge = {}
-    for(let poly_datum of poly_data) {
+    let pointHashes = new Map<number, Point>();
+    let halfedgeHashes = new Map<number, HalfEdge>();
+    for(let polyDatum of polyData) {
         let halfedges: HalfEdge[] = [];
-        for(let i = 0; i < poly_datum.length; i++) {
-            let u = poly_datum[i];
-            let p = new Point(u[0], -u[1], false);
-            if (point_hashes_to_point[p.hash()] === undefined) {
-                point_hashes_to_point[p.hash()] = p;
+        for(let i = 0; i < polyDatum.length; i++) {
+            let rawU = polyDatum[i];
+            let p = new Point(rawU[0], -rawU[1], false);
+            let u = pointHashes.get(p.hash());
+            if (u === undefined) {
+                pointHashes.set(p.hash(), p);
+                u = p;
             }
-            u = point_hashes_to_point[p.hash()];
 
             let halfedge = new HalfEdge(u);
             halfedges.push(halfedge);
@@ -83,13 +84,14 @@ export function LoadPolyData(poly_data) {
             halfedges[i].next = halfedges[(i+1)%halfedges.length];
             // Setting the HalfEdge prev: halfedges[(i+1)%halfedges.length].prev = halfedges[i];
             // Store this halfedge
-            halfedge_hashes_to_halfedge[(new Point(halfedges[i].originPoint.hash(), halfedges[i].next.originPoint.hash())).hash()] = halfedges[i];
+            halfedgeHashes.set((new Point(halfedges[i].originPoint.hash(), halfedges[i].next.originPoint.hash())).hash(), halfedges[i]);
 
             // Look for opposite twin and set twin if found
-            let opposite_hash = (new Point(halfedges[i].next.originPoint.hash(), halfedges[i].originPoint.hash())).hash();
-            if (halfedge_hashes_to_halfedge[opposite_hash] !== undefined) {
-                halfedge_hashes_to_halfedge[opposite_hash].twin = halfedges[i];
-                halfedges[i].twin = halfedge_hashes_to_halfedge[opposite_hash];
+            let twinHash = (new Point(halfedges[i].next.originPoint.hash(), halfedges[i].originPoint.hash())).hash();
+            let twinHalfedge = halfedgeHashes.get(twinHash)
+            if (twinHalfedge !== undefined) {
+                twinHalfedge.twin = halfedges[i];
+                halfedges[i].twin = twinHalfedge;
             }
         }
 
@@ -100,12 +102,12 @@ export function LoadPolyData(poly_data) {
     return faces;
 }
 
-export function LoadMaze(maze_string, max_size) {
-    maze_string = maze_string.trim();
+export function loadMaze(mazeString: string, maxSize: number) {
+    mazeString = mazeString.trim();
     let currentRowIndex = -1;
     let maze: boolean[][] = [];
     let currentRow: boolean[] = [];
-    for(let c of maze_string) {
+    for(let c of mazeString) {
         if (c == '\n') {
             maze.push(currentRow);
             currentRowIndex++;
@@ -115,11 +117,11 @@ export function LoadMaze(maze_string, max_size) {
         }
     }
 
-    let poly_data: number[][][] = [];
+    let polyData: number[][][] = [];
     for(let r = 0; r < maze.length; r++) {
         for(let c = 0; c < maze[r].length; c++) {
-            if (maze[r][c] && (max_size === undefined || (r <= max_size && c <= max_size))) {
-                poly_data.push([
+            if (maze[r][c] && (maxSize === undefined || (r <= maxSize && c <= maxSize))) {
+                polyData.push([
                     [c, r],
                     [c, r+1],
                     [c+1, r+1],
@@ -128,11 +130,11 @@ export function LoadMaze(maze_string, max_size) {
             }
         }
     }
-    return poly_data;
+    return polyData;
 }
 
 // Mesh must be loaded from url, as its too large of a string
-export async function LoadMesh(url) {
+export async function loadMesh(url: string) {
     let result = await getUrlContents(url);
     if (result === null) {
         return result;
@@ -141,23 +143,23 @@ export async function LoadMesh(url) {
     if (lines[0] != 'mesh' || lines[1] != '2') {
         return null;
     }
-    let verts_polys = lines[2].split(' ');
-    let num_verts = Number(verts_polys[0]);
-    let num_polys = Number(verts_polys[1]);
+    let vertsPolys = lines[2].split(' ');
+    let numVerts = Number(vertsPolys[0]);
+    let numPolys = Number(vertsPolys[1]);
     let verts: number[][] = [];
-    for(let i = 0; i < num_verts; i++) {
-        let vert_line = lines[3+i];
-        let s_verts = vert_line.split(' ');
-        verts.push([Number(s_verts[0]), Number(s_verts[1])]);
+    for(let i = 0; i < numVerts; i++) {
+        let vertLine = lines[3+i];
+        let splitVerts = vertLine.split(' ');
+        verts.push([Number(splitVerts[0]), Number(splitVerts[1])]);
     }
     let polys: number[][][] = [];
-    for(let i = 0; i < num_polys; i++) {
+    for(let i = 0; i < numPolys; i++) {
         let poly: number[][] = [];
-        let poly_data = lines[3+num_verts+i].split(' ').map(Number);
-        let num_poly_verts = poly_data[0];
-        for(let i = 0; i < num_poly_verts; i++) {
-            let poly_vert_index = poly_data[1+i];
-            poly.push(verts[poly_vert_index]);
+        let polyData = lines[3+numVerts+i].split(' ').map(Number);
+        let numPolyVerts = polyData[0];
+        for(let i = 0; i < numPolyVerts; i++) {
+            let polyVertIndex = polyData[1+i];
+            poly.push(verts[polyVertIndex]);
         }
         poly.reverse();
         polys.push(poly);

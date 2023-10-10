@@ -1,6 +1,6 @@
 import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
-import { Point, EPSILON, getPointDist, lerp, mergeAllFaces, markCorners, findBadFace } from "./math";
-import { LoadMesh, LoadPolyData } from "./utils";
+import { Point, Face, EPSILON, getPointDist, lerp, mergeAllFaces, markCorners, findBadFace } from "./math";
+import { loadMesh, loadPolyData } from "./utils";
 import { polyanya } from "./polyanya";
 import { hungarian } from "./hungarian";
 
@@ -12,20 +12,17 @@ class Agent {
     // Previous velocity
     prevVel = new Point(0, 0);
     // Waypoints are points along the macro-scale path
-    waypoints: Point[] = [];
+    waypoints: (Point | null)[] = [];
     // Path is the current path to waypoints[0]
     path: Point[] = [];
     // curTarget is path[0]
     curTarget: Point | null = null;
     // Cache
-    faces = null;
-    // Information for Formation class
-    // TODO: Have formation use a Map from Agent -> FormationData
-    isInFormation = false;
-    track;
-    constructor(position: Point, speed: number) {
+    faces: Face[];
+    constructor(position: Point, speed: number, faces: Face[]) {
         this.position = position;
         this.speed = speed;
+        this.faces = faces;
     }
     pathDistRemaining() {
         let totalPathLength = 0;
@@ -34,12 +31,11 @@ class Agent {
         }
         return totalPathLength;
     }
-    async setWaypoints(faces, waypoints, max_start_dist=undefined) {
-        this.faces = faces;
+    async setWaypoints(waypoints: (Point | null)[], maxStartDist?: number) {
         this.stop();
         this.waypoints = waypoints;
         // Update the current target
-        await this.updateTarget(max_start_dist, true);
+        await this.updateTarget(maxStartDist, true);
     }
     stop() {
         this.waypoints = [];
@@ -50,7 +46,7 @@ class Agent {
         return this.curTarget != null;
     }
     // Set Agent's target for this iteration
-    async updateTarget(max_path_dist=undefined, initializing=false) {
+    async updateTarget(maxPathDist?: number, initializing: boolean = false) {
         // If we're done with our target,
         if (this.curTarget == null) {
             if (!initializing) {
@@ -72,12 +68,12 @@ class Agent {
                     this.stop();
                     return;
                 }
-                let result = await polyanya(this.faces, this.position, this.waypoints[0], max_path_dist);
+                let result = await polyanya(this.faces, this.position, this.waypoints[0]!, maxPathDist);
                 if (result == null) {
                     this.stop();
                     return;
                 }
-                this.path = result['path'];
+                this.path = result.path;
                 this.path.splice(0, 1); // Ignore src in Path
             }
             // Use the next path
@@ -87,7 +83,7 @@ class Agent {
         if (this.position.minus(this.curTarget).magnitude() < EPSILON) {
             this.position = this.curTarget;
             this.curTarget = null;
-            this.updateTarget(max_path_dist);
+            this.updateTarget(maxPathDist);
         }
     }
     // Iterate the vec
@@ -138,7 +134,7 @@ class IPoint {
     }
 }
 
-function createIPoints(path, d) {
+function createIPoints(path: Point[], d: number) {
     let ipts: IPoint[] = [];
 
     // Create ipts every time a distance d is accumulated
@@ -162,25 +158,42 @@ function createIPoints(path, d) {
     return ipts;
 }
 
+interface AgentFormationData {
+    isInFormation: boolean,
+    track: (Point | null)[],
+}
+
 class Formation {
     agents: Agent[] = [];
-    position;
-    speed;
+    position: Point;
+    speed: number;
     // Tracks for movement
     mainTrack: IPoint[] | null = null;
     relativePositions: Point[] = [];
+    // FormationData for each agent
+    agentFormationData = new Map<Agent, AgentFormationData>();
     // Cache
-    faces;
-    constructor() {
+    faces: Face[];
+    constructor(faces: Face[]) {
+        this.faces = faces;
     }
-    addAgents(agents) {
+    addAgents(agents: Agent[]) {
         this.agents.push(...agents);
+        for(let agent of agents) {
+            this.agentFormationData.set(agent, {
+                isInFormation: false,
+                track: [],
+            })
+        }
         this.generateFormation();
+    }
+    getAgentFormationData(agent: Agent): AgentFormationData | null {
+        return this.agentFormationData.get(agent) || null;
     }
     generateFormation() {
         // TODO: Find a better meet-up position for all of the agents
         this.position = this.agents[0].position;
-        this.speed = null;
+        this.speed = this.agents[0].speed;
         this.relativePositions = [];
         for(let i = 0; i < this.agents.length; i++) {
             this.relativePositions.push(new Point(0, (this.agents.length-1)/2 - i));
@@ -193,23 +206,22 @@ class Formation {
         if (this.mainTrack != null) {
             this.mainTrack = null;
             for(let agent of this.agents) {
-                if (agent.isInFormation && agent.isPathing()) {
+                if (this.getAgentFormationData(agent)!.isInFormation && agent.isPathing()) {
                     agent.stop();
-                    agent.isInFormation = false;
+                    this.getAgentFormationData(agent)!.isInFormation = false;
                 }
             }
         }
     }
-    async pathfind(faces, dst) {
+    async pathfind(dst: Point) {
         this.stop();
-        this.faces = faces;
         const IPOINT_DIST = this.speed*1; // IPOINTS are spaced between 1 Second of movement
         const FORMATION_IPOINT_DIST = this.speed;
-        let result = await polyanya(faces, this.position, dst);
+        let result = await polyanya(this.faces, this.position, dst);
         // If the result exists, and involves actual movement,
-        if (result != null && result['distance'] > 0) {
+        if (result != null && result.distance > 0) {
             // Create ipts as the mainTrack
-            this.mainTrack = createIPoints(result['path'], IPOINT_DIST);
+            this.mainTrack = createIPoints(result.path, IPOINT_DIST);
 
             // Create all of the other tracks, as shifted versions of the mainTrack
             // This may include `null`, if it shifts into an obstacle or somewhere too far
@@ -226,7 +238,7 @@ class Formation {
                     // Get the actual trackPt, based on the offset rotated by dir
                     let currentTrackPt = mainPt.plus(new Point(dir.x*offset.x - dir.y*offset.y, dir.x*offset.y + dir.y*offset.x));
                     // Point is only valid if obstales delay it no more than FORMATION_IPOINT_DIST from mainTrack
-                    let isValid = (await polyanya(faces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
+                    let isValid = (await polyanya(this.faces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
                     currentTrack.push(isValid ? currentTrackPt : null);
                 }
                 // TODO: Make these the closest valid points to "currentTrackPt"
@@ -245,7 +257,7 @@ class Formation {
                 let trackCosts = Array(allTracks.length);
                 for(let j = 0; j < allTracks.length; j++) {
                     // Cost = Distance^2 between agent's position and track start point
-                    trackCosts[j] = Math.pow(getPointDist(this.agents[i].position, allTracks[j][0]), 2);
+                    trackCosts[j] = Math.pow(getPointDist(this.agents[i].position, allTracks[j][0]!), 2);
                 }
                 costMatrix[i] = trackCosts;
             }
@@ -256,25 +268,27 @@ class Formation {
 
             // Initialize all of the agents along their track
             for(let i = 0; i < this.agents.length; i++) {
-                this.agents[i].isInFormation = false;
+                this.getAgentFormationData(this.agents[i])!.isInFormation = false;
                 await this.startTrack(this.agents[i], allTracks[i]);
             }
         } else {
             console.error('Formation could not pathfind!');
         }
     }
-    async startTrack(agent, track) {
+    async startTrack(agent: Agent, track: (Point | null)[]) {
         // <= 5 seconds away to join formation
         const MAX_START_FORMATION_DIST = this.speed*5;
-        if (!agent.isInFormation) {
-            await agent.setWaypoints(this.faces, track, MAX_START_FORMATION_DIST);
+        if (!this.getAgentFormationData(agent)!.isInFormation) {
+            await agent.setWaypoints(track, MAX_START_FORMATION_DIST);
             if (!agent.isPathing()) {
                 // TODO: Handle if Agent cannot join formation
                 console.error('Could not join formation!', agent.position, track[0]);
                 return;
             }
-            agent.isInFormation = true;
-            agent.track = track;
+            this.agentFormationData.set(agent, {
+                isInFormation: true,
+                track: track,
+            })
         }
     }
     // Get the amount of distance remaining for this agent
@@ -283,7 +297,7 @@ class Formation {
         if (this.mainTrack == null) {
             return null;
         }
-        if (!agent.isInFormation) {
+        if (!this.getAgentFormationData(agent)!.isInFormation) {
             return null;
         }
         if (!agent.isPathing()) {
@@ -299,7 +313,7 @@ class Formation {
         }
         return pathDist + waypointDist;
     }
-    getIdealSpeeds(deltaTime) {
+    getIdealSpeeds(deltaTime: number) {
         const MAX_SPEEDUP = 0.25; // Max speed-up of 25%
         if (this.mainTrack == null) {
             throw "Invalid Call!";
@@ -327,7 +341,7 @@ class Formation {
         // Ideal speed is based on each agent's comparison to the agent that's furthest along the track
         for(let i = 0; i < this.agents.length; i++) {
             let agent = this.agents[i];
-            if (!agent.isInFormation) {
+            if (!this.getAgentFormationData(agent)!.isInFormation) {
                 continue;
             }
             let distanceRemaining = distanceRemainings[i];
@@ -350,7 +364,7 @@ class Formation {
         // Return the ideal speeds
         return idealSpeeds;
     }
-    async iterate(deltaTime) {
+    async iterate(deltaTime: number) {
         // If the Formation is following a main track, iterate it
         if (this.mainTrack != null) {
             // Get Ideal Speed for all Agents
@@ -360,7 +374,7 @@ class Formation {
             let remainingTimes = Array(this.agents.length);
             for(let i = 0; i < this.agents.length; i++) {
                 let agent = this.agents[i];
-                if (!agent.isInFormation) {
+                if (!this.getAgentFormationData(agent)!.isInFormation) {
                     continue;
                 }
                 // Iterate this agent
@@ -369,7 +383,7 @@ class Formation {
             // Iterate again, with any remaining time, using strict collision avoidance
             for(let i = 0; i < this.agents.length; i++) {
                 let agent = this.agents[i];
-                if (!agent.isInFormation) {
+                if (!this.getAgentFormationData(agent)!.isInFormation) {
                     continue;
                 }
                 // Iterate again with any remaining time
@@ -428,16 +442,18 @@ class Formation {
 }
 
 async function main() {
-    //const faces = LoadPolyData(poly_data_1);
+    //const faces = loadPolyData(polyData1);
 
     const MAZE_URL = 'https://api.allorigins.win/raw?url=https://pastebin.com/raw/GWRCSyUp';
-    //const maze_poly_data = LoadMaze(await getUrlContents(MAZE_URL));
-    //const faces = LoadPolyData(maze_poly_data);
+    //const mazePolyData = loadMaze(await getUrlContents(MAZE_URL));
+    //const faces = loadPolyData(mazePolyData);
 
-    //const mesh_poly_data = await LoadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
-    const mesh_poly_data = await LoadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
-    //const mesh_poly_data = await LoadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
-    const faces = LoadPolyData(mesh_poly_data);
+    //const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
+    const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
+    // TODO: Make assert/! cleaner
+    console.assert(meshPolyData != null);
+    //const meshPolyData = await loadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
+    const faces = loadPolyData(meshPolyData!);
 
     // Simplify the mesh, mark corners, and validate the mesh
     mergeAllFaces(faces);
@@ -465,13 +481,13 @@ async function main() {
     // Constants
     let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), agentSpeed),
-        new Agent(new Point(8.5, -1.5), agentSpeed),
-        new Agent(new Point(10.5, -1.5), agentSpeed),
-        new Agent(new Point(11.5, -1.5), agentSpeed),
-        new Agent(new Point(12.5, -1.5), agentSpeed),
+        new Agent(new Point(5.5, -1.5), agentSpeed, faces),
+        new Agent(new Point(8.5, -1.5), agentSpeed, faces),
+        new Agent(new Point(10.5, -1.5), agentSpeed, faces),
+        new Agent(new Point(11.5, -1.5), agentSpeed, faces),
+        new Agent(new Point(12.5, -1.5), agentSpeed, faces),
     ];
-    let formation = new Formation();
+    let formation = new Formation(faces);
     formation.addAgents(agents);
     agents = [];
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
@@ -483,14 +499,14 @@ async function main() {
     // Main Loop
     const FRAME_DELAY_RATIO = 1;
     const ISOMETRIC_VIEW = false;
-    let frame_count = 0;
+    let frameCount = 0;
 
     let translate = [0, 0];
     let zoom = 1;
 
     let render = async function() {
-        frame_count++;
-        if (frame_count % FRAME_DELAY_RATIO != 0) {
+        frameCount++;
+        if (frameCount % FRAME_DELAY_RATIO != 0) {
             window.requestAnimationFrame(render);
             return;
         }
@@ -548,9 +564,9 @@ async function main() {
         // Update path code
         if (lastClick != null) {
             for(let agent of agents) {
-                await agent.setWaypoints(faces, [lastClick]);
+                await agent.setWaypoints([lastClick]);
             }
-            await formation.pathfind(faces, lastClick);
+            await formation.pathfind(lastClick);
         }
         // Move along path code
         for(let agent of agents) {
@@ -569,7 +585,7 @@ async function main() {
         for(let i = 0; i < formation.agents.length; i++) {
             let agent = formation.agents[i];
             let isRunning = false;
-            if (agent.isInFormation && agent.prevVel !== undefined) {
+            if (formation.getAgentFormationData(agent)!.isInFormation && agent.prevVel !== undefined) {
                 isRunning = agent.prevVel.magnitude() > formation.speed + EPSILON;
             }
             drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green');
@@ -580,13 +596,20 @@ async function main() {
         if (DRAW_DEBUG_TRACKS && formation.mainTrack != null) {
             drawPoint(formation.position, 'purple');
             let mainTrack = formation.mainTrack;
+            // For each point along the main track,
             for(let i = 0; i < mainTrack.length; i++) {
+                // Track the agent's track points for that i
                 for(let j = 0; j < formation.agents.length; j++) {
                     let agent = formation.agents[j];
-                    if (agent.isInFormation && agent.track[i] != null) {
-                        drawPoint(agent.track[i] , 'green', 1);
+                    let agentFormationData = formation.getAgentFormationData(agent)!;
+                    if (agentFormationData.isInFormation) {
+                        let pt = agentFormationData.track[i];
+                        if (pt != null) {
+                            drawPoint(pt, 'green', 1);
+                        }
                     }
                 }
+                // And, draw the main track point
                 drawPoint(mainTrack[i].p, 'blue', 1);
             }
         }

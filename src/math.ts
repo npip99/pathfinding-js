@@ -8,8 +8,8 @@ Data Structures
 
 export const EPSILON = 1e-13;
 
-// 32-bit FNV hash on an arbitrary buffer
-function fnv_hash(buffer) {
+// 32-bit FNV-1a hash on an arbitrary buffer
+export function FNVHash(buffer: ArrayBuffer) {
     const byteView = new Uint8Array(buffer);
 
     let h = 2166136261;
@@ -21,10 +21,10 @@ function fnv_hash(buffer) {
 }
 
 export class Point {
-    x;
-    y;
-    isCorner;
-    constructor(x, y, isCorner?) {
+    x: number;
+    y: number;
+    isCorner: boolean | undefined;
+    constructor(x: number, y: number, isCorner?: boolean) {
         this.x = x;
         this.y = y;
         this.isCorner = isCorner;
@@ -37,21 +37,21 @@ export class Point {
         const floatView = new Float64Array(buffer);
         floatView[0] = this.x;
         floatView[1] = this.y;
-        return fnv_hash(buffer);
+        return FNVHash(buffer);
     }
-    plus(other) {
+    plus(other: Point) {
         return new Point(this.x+other.x, this.y+other.y);
     }
-    minus(other) {
+    minus(other: Point) {
         return new Point(this.x-other.x, this.y-other.y);
     }
-    multiply(factor) {
+    multiply(factor: number) {
         return new Point(this.x*factor, this.y*factor);
     }
-    divide(factor) {
+    divide(factor: number) {
         return new Point(this.x/factor, this.y/factor);
     }
-    dot(other) {
+    dot(other: Point) {
         return this.x*other.x + this.y*other.y;
     }
     magnitude() {
@@ -63,27 +63,28 @@ export class Point {
 }
 
 // f=0 => p1, f=1 => p2
-export function lerp(p1, p2, f) {
+export function lerp(p1: Point, p2: Point, f: number) {
     return p1.multiply(1-f).plus(p2.multiply(f));
 }
 
 export class HalfEdge {
-    originPoint; // Origin Point of halfedge
-    next; // HalfEdge
-    face; // Face
-    twin; // Symmetrical HalfEdge
-    constructor(originPoint) {
+    originPoint: Point;
+    next: HalfEdge;
+    face: Face | null;
+    twin: HalfEdge | null;
+    constructor(originPoint: Point) {
         this.originPoint = originPoint;
-        this.next = null;
+        this.next = this;
         this.face = null;
         this.twin = null;
     }
 }
 
 export class Face {
-    rootEdge; // Starting HalfEdge
-    isNavigable; // Whether or not the Face is navigable
-    constructor(rootEdge, isNavigable) {
+    rootEdge: HalfEdge; // Starting HalfEdge
+    isNavigable: boolean; // Whether or not the Face is navigable
+    // NOTE: Requires rootEdge to be circular
+    constructor(rootEdge: HalfEdge, isNavigable: boolean) {
         this.rootEdge = rootEdge;
         this.isNavigable = isNavigable;
         // Set the face property of all edges
@@ -115,19 +116,19 @@ Math Functions
 ====================
 */
 
-export function getPointDist(p1, p2) {
+export function getPointDist(p1: Point, p2: Point) {
     return p1.minus(p2).magnitude();
 }
 
-export function getIntersection(seg1, seg2) {
-    const x1 = seg1[0].x;
-    const y1 = seg1[0].y;
-    const x2 = seg1[1].x;
-    const y2 = seg1[1].y;
-    const x3 = seg2[0].x;
-    const y3 = seg2[0].y;
-    const x4 = seg2[1].x;
-    const y4 = seg2[1].y;
+export function getIntersection(seg1A: Point, seg1B: Point, seg2A: Point, seg2B: Point) {
+    const x1 = seg1A.x;
+    const y1 = seg1A.y;
+    const x2 = seg1B.x;
+    const y2 = seg1B.y;
+    const x3 = seg2A.x;
+    const y3 = seg2A.y;
+    const x4 = seg2B.x;
+    const y4 = seg2B.y;
   
     const denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
   
@@ -143,14 +144,14 @@ export function getIntersection(seg1, seg2) {
 }
 
 // Positive is CCW, Negative is CW. 0 is Degenerate
-export function getTriangleSign(v1, v2, v3) {
+export function getTriangleSign(v1: Point, v2: Point, v3: Point) {
     return (v2.x - v1.x) * (v3.y - v1.y) - (v2.y - v1.y) * (v3.x - v1.x);
 }
 
 // https://stackoverflow.com/questions/217578/how-can-i-determine-whether-a-2d-point-is-within-a-polygon
 // NOTE: This function only works with convex faces
 // Return 1 if inside, 0 if on boundary, -1 if on outside
-export function isPointInFace(face, p) {
+export function isPointInFace(face: Face, p: Point) {
     let count = 0;
     let currentEdge = face.rootEdge;
 
@@ -193,7 +194,7 @@ Mesh Functions
 ====================
 */
 
-function makeConvex(faces) {
+function makeConvex(faces: Face[]) {
     throw "Unimplemented Error";
     let newFaces: Face[] = [];
     for(let face of faces) {
@@ -242,13 +243,6 @@ function makeConvex(faces) {
     }
 }
 
-function getPrev(face, edge) {
-    let currentEdge = face.rootEdge;
-    while(currentEdge.next != edge) {
-        currentEdge = currentEdge.next;
-    }
-}
-
 // Badj     Badj
 //   \       /
 //    B theirB
@@ -256,9 +250,9 @@ function getPrev(face, edge) {
 //    A theirA
 //   /      \
 // Aadj    Aadj
-function canMergeTwoFaces(face, edge) {
+function canMergeTwoFaces(face: Face, edge: HalfEdge) {
     // NOTE: Infinite loop if edge isn't a loop
-    function findPrev(edge) {
+    function findPrev(edge: HalfEdge) {
         let currentEdge = edge;
         while (currentEdge.next != edge) {
             currentEdge = currentEdge.next;
@@ -293,11 +287,11 @@ function canMergeTwoFaces(face, edge) {
         && getTriangleSign(ourAadj.originPoint, A.originPoint, theirAadj.originPoint) >= 0;
 }
 
-function mergeTwoFaces(face, edge) {
+function mergeTwoFaces(face: Face, edge: HalfEdge): Face {
     // TODO: Remove Debug Check, or make canMergeTwoFaces faster
     if (!canMergeTwoFaces(face, edge)) {
         console.error('Cannot Merge!', face, edge);
-        return null;
+        throw 'Cannot Merge!';
     }
 
     // edge refers to <A, B>, where that's the edge that's getting merged
@@ -305,14 +299,14 @@ function mergeTwoFaces(face, edge) {
     // Required: face.isNavigable == edge.twin.face.isNavigable
     let A = edge;
     let B = A.next;
-    let theirA = A.twin.next;
-    let theirB = A.twin;
+    let theirA = A.twin!.next;
+    let theirB = A.twin!;
     // While B still shares the face with A, iterate to the next B
-    while(B.twin != null && A.twin.face == B.twin.face) {
+    while(B.twin != null && A.twin!.face == B.twin.face) {
         theirB = B.twin;
         B = B.next;
     }
-    let removedFace = theirB.face;
+    let removedFace = theirB.face!;
 
     // Update A to now use the edge of <theirA, theirA.next>
     A.next = theirA.next;
@@ -340,7 +334,7 @@ function mergeTwoFaces(face, edge) {
     return removedFace;
 }
 
-function mergeCollinearEdges(faces) {
+function mergeCollinearEdges(faces: Face[]) {
     // Merge consecutive collinear edges
     for(let face of faces) {
         let merged = true;
@@ -364,7 +358,7 @@ function mergeCollinearEdges(faces) {
                     if (theirEdge3 != null) {
                         // Also remove otherEdge2 (i.e., theirEdge3.next)
                         theirEdge3.next = theirEdge3.next.next;
-                        theirEdge3.face.rootEdge = theirEdge3;
+                        theirEdge3.face!.rootEdge = theirEdge3;
                         // Connect the twins
                         edge1.twin = theirEdge3;
                         theirEdge3.twin = edge1;
@@ -378,17 +372,17 @@ function mergeCollinearEdges(faces) {
     }
 }
 
-function mergeAllFaces_naive(faces) {
+function mergeAllFacesNaive(faces: Face[]) {
     let merged = true;
     
     // Merge faces while still possible
-    let largest_i = 0;
+    let lastI = 0;
     while (merged) {
         merged = false;
 
         // While not merged, try all the faces
-        for (let i = largest_i; i < faces.length && !merged; i++) {
-            largest_i = Math.max(largest_i, i);
+        for (let i = lastI; i < faces.length && !merged; i++) {
+            lastI = Math.max(lastI, i);
             let currentFace = faces[i];
 
             // Check each halfedge of the current face
@@ -415,23 +409,23 @@ function mergeAllFaces_naive(faces) {
     mergeCollinearEdges(faces);
 }
 
-export function mergeAllFaces(faces) {
+export function mergeAllFaces(faces: Face[]) {
     // meshmerger.cpp:smart_merge
 
     // Tracks the last face push into pq,
     // So we can check if a pq element is fresh
-    let face_to_index = new Map();
+    let faceToIndex = new Map();
 
     // priority-largest queue
     interface PQType {
-        face;
-        edge;
+        face: Face;
+        edge: HalfEdge;
         totalArea: number;
-        index;
+        index: number;
     }
-    let pq = new PriorityQueue<PQType>({comparator: (a, b) => b['totalArea'] - a['totalArea']});
+    let pq = new PriorityQueue<PQType>({comparator: (a, b) => b.totalArea - a.totalArea});
 
-    function pushFace(face) {
+    function pushFace(face: Face) {
         let currentArea = face.getArea();
         let bestMergeArea = null;
         let bestMergeEdge = null;
@@ -454,22 +448,22 @@ export function mergeAllFaces(faces) {
         } while (currentEdge !== face.rootEdge);
 
         // Get the new index
-        let nextFaceIndex = face_to_index.get(face)+1;
+        let nextFaceIndex = faceToIndex.get(face)+1;
         // Push to the pq, including the index
-        face_to_index.set(face, nextFaceIndex);
+        faceToIndex.set(face, nextFaceIndex);
         if (bestMergeArea != null) {
             pq.add({
-                'face': face,
-                'edge': bestMergeEdge,
-                'totalArea': bestMergeArea,
-                'index': nextFaceIndex,
+                face: face,
+                edge: bestMergeEdge!,
+                totalArea: bestMergeArea,
+                index: nextFaceIndex,
             });
         }
     }
 
     // Initialize
     for(let face of faces) {
-        face_to_index.set(face, 0);
+        faceToIndex.set(face, 0);
         pushFace(face);
     }
     
@@ -477,18 +471,18 @@ export function mergeAllFaces(faces) {
     while (!pq.isEmpty()) {
         // Get a top that hasn't been marked stale
         let top = pq.poll()!;
-        if (top['index'] != face_to_index.get(top['face'])) {
+        if (top.index != faceToIndex.get(top.face)) {
             continue;
         }
 
         // get the mergeFace and mergeEdge
-        let mergeFace = top['face'];
-        let mergeEdge = top['edge'];
+        let mergeFace = top.face;
+        let mergeEdge = top.edge;
 
         // Merge
         let removedFace = mergeTwoFaces(mergeFace, mergeEdge);
         // Splice the removedFace out of the list
-        face_to_index.set(removedFace, -1);
+        faceToIndex.set(removedFace, -1);
         faces.splice(faces.indexOf(removedFace), 1);
 
         // Check each halfedge of the current face
@@ -510,7 +504,7 @@ export function mergeAllFaces(faces) {
     mergeCollinearEdges(faces);
 }
 
-export function markCorners(faces) {
+export function markCorners(faces: Face[]) {
     // Mark Corners
     for(let face of faces) {
         let currentEdge = face.rootEdge;
@@ -536,7 +530,7 @@ export function markCorners(faces) {
 }
 
 // Find any invalid faces, by checking .twin and <10k edges
-export function findBadFace(faces) {
+export function findBadFace(faces: Face[]) {
     const MAX_EDGES = 10000;
     for(let face of faces) {
         let i = 0;

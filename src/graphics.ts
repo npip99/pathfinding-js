@@ -1,16 +1,17 @@
 // Graphics Code
+import { Point, Face } from "./math";
 
 export const canvas = document.getElementById('myCanvas') as HTMLCanvasElement;
 export const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
 export const SCALE = 18;
 
-export function setCanvasDimensions(width, height) {
+export function setCanvasDimensions(width: number, height: number) {
     canvas.width = width;
     canvas.height = height;
 }
 
 // Map x,y from the canvas, to their transformed versions
-export function getTransformedCoordinates(x, y) {
+export function getTransformedCoordinates(x: number, y: number) {
     let transform = ctx.getTransform().inverse();
     let pt = transform.transformPoint(new DOMPoint(x, y));
     return {
@@ -19,7 +20,7 @@ export function getTransformedCoordinates(x, y) {
     };
 }
 
-export function drawSegment(p1, p2, color) {
+export function drawSegment(p1: Point, p2: Point, color?: string) {
     if (color !== undefined) {
         ctx.strokeStyle = color;
     }
@@ -29,27 +30,14 @@ export function drawSegment(p1, p2, color) {
     ctx.stroke();
 }
 
-export function drawPoint(p, color?: string, radius=5) {
+export function drawPoint(p: Point, color?: string, radius=5) {
     if (color !== undefined) {
         ctx.fillStyle = color;
     }
     ctx.fillRect(SCALE*p.x-Math.floor(radius/2), -SCALE*p.y-Math.floor(radius/2), radius, radius);
 }
 
-export function drawSearchNode(searchNode, color?: string) {
-    if (color !== undefined) {
-        ctx.fillStyle = color;
-    }
-    ctx.beginPath();
-    ctx.moveTo(SCALE*searchNode.root.x, -SCALE*searchNode.root.y);
-    ctx.lineTo(SCALE*searchNode.startPoint.x, -SCALE*searchNode.startPoint.y);
-    ctx.lineTo(SCALE*searchNode.endPoint.x, -SCALE*searchNode.endPoint.y);
-    ctx.lineTo(SCALE*searchNode.root.x, -SCALE*searchNode.root.y);
-    ctx.closePath();
-    ctx.fill();
-}
-
-export function drawFace(face, fillColor) {
+export function drawFace(face: Face, fillColor: string) {
     ctx.beginPath();
     let currentEdge = face.rootEdge;
     ctx.moveTo(SCALE*currentEdge.originPoint.x, -SCALE*currentEdge.originPoint.y);
@@ -66,7 +54,7 @@ export function drawFace(face, fillColor) {
     ctx.stroke();
 }
 
-export function drawPath(path, lineWidth?: number) {
+export function drawPath(path: Point[], lineWidth?: number) {
     ctx.lineWidth = lineWidth === undefined ? 1 : lineWidth;
     ctx.strokeStyle = 'purple';
     ctx.beginPath();

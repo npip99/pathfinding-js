@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
-    "strictNullChecks": true,
     "target": "ES5",
-    "lib": ["ES2016", "DOM"]
+    "lib": ["ES2016", "DOM"],
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true
   }
 }
