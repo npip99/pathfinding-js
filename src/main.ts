@@ -1,36 +1,47 @@
 import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
 import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace } from "./math";
-import { loadMesh, loadPolyData } from "./utils";
+import { loadMesh, loadMaze, loadPolyData, meshFromObstacles } from "./utils";
 import { Agent, Formation } from "./agent";
 
 async function main() {
+    const AGENT_RADIUS = 0.5;
     //const faces = loadPolyData(polyData1);
 
     //const MAZE_URL = 'https://api.allorigins.win/raw?url=https://pastebin.com/raw/GWRCSyUp';
     //const mazePolyData = loadMaze(await getUrlContents(MAZE_URL));
     //const faces = loadPolyData(mazePolyData);
 
+    const rawObstacles = [
+        [[10, -10], [20, -10], [20, -20], [10, -20]],
+        [[30, -30], [60, -30], [60, -40], [30, -40]],
+        [[23, -10], [40, -5], [60, -15], [30, -20]],
+        // [[23, -10], [40, -5], [60, -15], [18, -20]],
+        // [[23, -10], [40, -5], [60, -15], [5, -10]],
+    ];
+    let obstacles = meshFromObstacles(rawObstacles);
+    let offsetObstacles = meshFromObstacles(rawObstacles, AGENT_RADIUS);
+
     //const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
-    const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
-    // TODO: Make assert/! cleaner
-    console.assert(meshPolyData != null);
+    //let meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
     //const meshPolyData = await loadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
-    const faces = loadPolyData(meshPolyData!);
+    let obstacleFaces = loadPolyData(obstacles);
+    let offsetObstacleFaces = loadPolyData(offsetObstacles);
 
     // Simplify the mesh, mark corners, and validate the mesh
-    mergeAllFaces(faces);
-    markCorners(faces);
-    let badFace = findBadFace(faces);
+    mergeAllFaces(obstacleFaces);
+    mergeAllFaces(offsetObstacleFaces);
+    markCorners(offsetObstacleFaces);
+    let badFace = findBadFace(offsetObstacleFaces);
     if (badFace != null) {
         console.log('Bad Face Found!', badFace);
-        console.log(badFace.rootEdge, badFace.rootEdge.next, badFace.rootEdge.next.next, badFace.rootEdge.next.next.next, badFace.rootEdge.next.next.next.next)
+        console.log(badFace.rootEdge, badFace.rootEdge.next, badFace.rootEdge.next.next, badFace.rootEdge.next.next.next, badFace.rootEdge.next.next.next.next);
         return;
     }
 
     // Set the canvas dimensions to give room for the mesh
     let maxX = 0;
     let minY = 0;
-    for(let face of faces) {
+    for(let face of obstacleFaces) {
         let currentEdge = face.rootEdge;
         do {
             maxX = Math.max(maxX, currentEdge.originPoint.x);
@@ -43,13 +54,13 @@ async function main() {
     // Constants
     let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), agentSpeed, faces),
-        new Agent(new Point(8.5, -1.5), agentSpeed, faces),
-        new Agent(new Point(10.5, -1.5), agentSpeed, faces),
-        new Agent(new Point(11.5, -1.5), agentSpeed, faces),
-        new Agent(new Point(12.5, -1.5), agentSpeed, faces),
+        new Agent(new Point(5.5, -1.5), agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(8.5, -1.5), agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(10.5, -1.5), agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(11.5, -1.5), agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(12.5, -1.5), agentSpeed, offsetObstacleFaces),
     ];
-    let formation = new Formation(faces);
+    let formation = new Formation(offsetObstacleFaces);
     formation.addAgents(agents);
     agents = [];
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
@@ -141,7 +152,7 @@ async function main() {
         const DRAW_RUNNING_COLOR = false;
         ctx.fillStyle = 'black';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        for(let face of faces) {
+        for(let face of obstacleFaces) {
             drawFace(face, 'white');
         }
         for(let i = 0; i < formation.agents.length; i++) {

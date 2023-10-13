@@ -194,6 +194,61 @@ Mesh Functions
 ====================
 */
 
+export function faceFromPolyline(polyline: Point[]) {
+    let rootEdge = new HalfEdge(polyline[0]);
+
+    let prevEdge = rootEdge;
+    for(let pt of polyline.slice(1)) {
+        let edge = new HalfEdge(pt);
+        prevEdge.next = edge;
+        prevEdge = edge;
+    }
+    prevEdge.next = rootEdge;
+
+    return new Face(rootEdge, true);
+}
+
+export function polylineFromFace(face: Face) {
+    let polyline: Point[] = [];
+
+    let currentEdge = face.rootEdge;
+    do {
+        polyline.push(currentEdge.originPoint);
+        currentEdge = currentEdge.next;
+    } while (currentEdge != face.rootEdge);
+
+    return polyline;
+}
+
+export function offsetFace(face: Face, offset: number): Face {
+    let newPolyline: Point[] = [];
+
+    let currentEdge = face.rootEdge;
+    do {
+        // Get the pt and the surrounding points
+        let prevPt = currentEdge.originPoint;
+        let pt = currentEdge.next.originPoint;
+        let nextPt = currentEdge.next.next.originPoint;
+
+        // Calculate the offset for pt
+        let AVec = pt.minus(prevPt).normalize();
+        let BVec = pt.minus(nextPt).normalize();
+        let ANorm = new Point(-AVec.y, AVec.x);
+        let BNorm = new Point(BVec.y, -BVec.x);
+        let midVec = AVec.plus(BVec).normalize();
+        let ratio = Math.min(midVec.dot(ANorm), midVec.dot(BNorm));
+        let newPt = pt.plus(midVec.multiply(offset/ratio));
+
+        // Add the replacement newPt to the polyline
+        newPolyline.push(newPt);
+
+        // Iterate Next
+        currentEdge = currentEdge.next;
+    } while (currentEdge != face.rootEdge);
+
+    return faceFromPolyline(newPolyline);
+}
+
 function makeConvex(faces: Face[]) {
     throw "Unimplemented Error";
     let newFaces: Face[] = [];

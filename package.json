@@ -10,11 +10,13 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "watchify": "^4.0.0",
-    "tsify": "^5.0.4"
+    "tsify": "^5.0.4",
+    "watchify": "^4.0.0"
   },
   "dependencies": {
-    "typescript": "^5.2.2",
-    "data-structure-typed": "^1.34.5"
+    "cdt2d": "^1.0.0",
+    "clean-pslg": "^1.1.2",
+    "data-structure-typed": "^1.34.5",
+    "typescript": "^5.2.2"
   }
 }

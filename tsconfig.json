@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "ES5",
     "lib": ["ES2016", "DOM"],
+    "esModuleInterop": true,
     "strictNullChecks": true,
     "noImplicitAny": true,
     "noImplicitOverride": true,
