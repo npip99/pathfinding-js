@@ -1,6 +1,6 @@
 import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
 import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace } from "./math";
-import { loadMesh, loadMaze, loadPolyData, meshFromObstacles } from "./utils";
+import { loadMesh, loadMaze, loadPolyData, polyDataFromObstacles } from "./utils";
 import { Agent, Formation } from "./agent";
 
 async function main() {
@@ -12,26 +12,29 @@ async function main() {
     //const faces = loadPolyData(mazePolyData);
 
     const rawObstacles = [
-        [[10, -10], [20, -10], [20, -20], [10, -20]],
-        [[30, -30], [60, -30], [60, -40], [30, -40]],
-        [[23, -10], [40, -5], [60, -15], [30, -20]],
+        [[10, -10], [10, -20], [20, -20], [20, -10]],
+        [[30, -30], [30, -40], [60, -40], [60, -30]],
+        [[21, -10], [30, -20], [60, -15], [40, -5]],
         // [[23, -10], [40, -5], [60, -15], [18, -20]],
         // [[23, -10], [40, -5], [60, -15], [5, -10]],
     ];
-    let obstacles = meshFromObstacles(rawObstacles);
-    let offsetObstacles = meshFromObstacles(rawObstacles, AGENT_RADIUS);
+
+    let traversablePolyData = polyDataFromObstacles(rawObstacles);
+    // TODO: Ensure that facets are cut into acute vertices, so that 0.99/sqrt(2) is guaranteed to be safe
+    let offsetTraversablePolyData = polyDataFromObstacles(rawObstacles, AGENT_RADIUS*0.99/Math.sqrt(2));
 
     //const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
     //let meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
     //const meshPolyData = await loadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
-    let obstacleFaces = loadPolyData(obstacles);
-    let offsetObstacleFaces = loadPolyData(offsetObstacles);
+    let obstacleFaces = loadPolyData(rawObstacles);
+    let traversableFaces = loadPolyData(traversablePolyData);
+    let offsetTraversableFaces = loadPolyData(offsetTraversablePolyData);
 
     // Simplify the mesh, mark corners, and validate the mesh
-    mergeAllFaces(obstacleFaces);
-    mergeAllFaces(offsetObstacleFaces);
-    markCorners(offsetObstacleFaces);
-    let badFace = findBadFace(offsetObstacleFaces);
+    mergeAllFaces(traversableFaces);
+    mergeAllFaces(offsetTraversableFaces);
+    markCorners(offsetTraversableFaces);
+    let badFace = findBadFace(offsetTraversableFaces);
     if (badFace != null) {
         console.log('Bad Face Found!', badFace);
         console.log(badFace.rootEdge, badFace.rootEdge.next, badFace.rootEdge.next.next, badFace.rootEdge.next.next.next, badFace.rootEdge.next.next.next.next);
@@ -41,7 +44,7 @@ async function main() {
     // Set the canvas dimensions to give room for the mesh
     let maxX = 0;
     let minY = 0;
-    for(let face of obstacleFaces) {
+    for(let face of traversableFaces) {
         let currentEdge = face.rootEdge;
         do {
             maxX = Math.max(maxX, currentEdge.originPoint.x);
@@ -54,13 +57,13 @@ async function main() {
     // Constants
     let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(8.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(10.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(5.5, -1.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(8.5, -1.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(10.5, -1.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed),
     ];
-    let formation = new Formation(offsetObstacleFaces);
+    let formation = new Formation(offsetTraversableFaces, obstacleFaces);
     formation.addAgents(agents);
     agents = [];
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
@@ -131,13 +134,18 @@ async function main() {
             ctx.rotate(Math.PI / 4);
             ctx.translate(-rect.width/2, -rect.height/2);
         }
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for(let face of traversableFaces) {
+            drawFace(face, 'white');
+        }
 
         // Iteration and Rendering
 
         // Update path code
         if (lastClick != null) {
             for(let agent of agents) {
-                await agent.setWaypoints([lastClick]);
+                await agent.setWaypoints(offsetTraversableFaces, [lastClick]);
             }
             await formation.pathfind(lastClick);
         }
@@ -147,7 +155,7 @@ async function main() {
             let agent = agents[i];
             let otherAgents = agents.slice();
             otherAgents.splice(i, 1);
-            await agent.considerNeighboringAgents(otherAgents, deltaTime);
+            await agent.considerNeighboringAgents(offsetTraversableFaces, traversableFaces, otherAgents, deltaTime);
         }
         for(let agent of agents) {
             agent.iterate(deltaTime);
@@ -158,11 +166,6 @@ async function main() {
         const DRAW_AGENT_PATHING = false;
         const DRAW_DEBUG_TRACKS = false;
         const DRAW_RUNNING_COLOR = false;
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        for(let face of obstacleFaces) {
-            drawFace(face, 'white');
-        }
         for(let i = 0; i < formation.agents.length; i++) {
             let agent = formation.agents[i];
             let isRunning = false;

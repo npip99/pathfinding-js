@@ -241,8 +241,8 @@ export function offsetFace(face: Face, offset: number): Face {
         let nextPt = currentEdge.next.next.originPoint;
 
         // Calculate the offset for pt
-        let AVec = pt.minus(prevPt).normalize();
-        let BVec = pt.minus(nextPt).normalize();
+        let AVec = pt.minus(nextPt).normalize();
+        let BVec = pt.minus(prevPt).normalize();
         let ANorm = new Point(-AVec.y, AVec.x);
         let BNorm = new Point(BVec.y, -BVec.x);
         let midVec = AVec.plus(BVec).normalize();

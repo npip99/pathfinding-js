@@ -23,13 +23,10 @@ export class Agent {
     path: Point[] = [];
     // curTarget is path[0]
     curTarget: Point | null = null;
-    // Cache
-    faces: Face[];
-    constructor(position: Point, radius: number, speed: number, faces: Face[]) {
+    constructor(position: Point, radius: number, speed: number) {
         this.position = position;
         this.radius = radius;
         this.speed = speed;
-        this.faces = faces;
     }
     getORCAAgent(): ORCAAgent {
         return {
@@ -45,11 +42,11 @@ export class Agent {
         }
         return totalPathLength;
     }
-    async setWaypoints(waypoints: (Point | null)[], maxStartDist?: number) {
+    async setWaypoints(offsetTraversableFaces: Face[], waypoints: (Point | null)[], maxStartDist?: number) {
         this.stop();
         this.waypoints = waypoints;
         // Update the current target
-        await this.updateTarget(maxStartDist, true);
+        await this.updateTarget(offsetTraversableFaces, maxStartDist, true);
     }
     stop() {
         this.waypoints = [];
@@ -63,7 +60,7 @@ export class Agent {
         return this.path.length > 1 || this.waypoints.length > 1;
     }
     // Set Agent's target for this iteration
-    async updateTarget(maxPathDist?: number, initializing: boolean = false) {
+    async updateTarget(offsetTraversableFaces: Face[], maxPathDist?: number, initializing: boolean = false) {
         // If we're done with our target,
         if (this.curTarget == null) {
             if (!initializing) {
@@ -85,7 +82,7 @@ export class Agent {
                     this.stop();
                     return;
                 }
-                let result = await polyanya(this.faces, this.position, this.waypoints[0]!, maxPathDist);
+                let result = await polyanya(offsetTraversableFaces, this.position, this.waypoints[0]!, maxPathDist);
                 if (result == null) {
                     this.stop();
                     return;
@@ -99,17 +96,21 @@ export class Agent {
         // If we've already reached the target, and there's more, pop it and update target
         if (this.hasAnotherTarget() && this.position.minus(this.curTarget).magnitude() < this.radius) {
             this.curTarget = null;
-            await this.updateTarget();
+            await this.updateTarget(offsetTraversableFaces);
         }
     }
-    // Takes all neighboringAgents into consideration prior to iteration
-    async considerNeighboringAgents(neighboringAgents: Agent[], deltaTime: number, speed?: number) {
+    // Takes all neighboring Agents and Obstacles into consideration during the calculation of current velocity
+    async considerNeighboringAgents(offsetTraversableFaces: Face[], neighboringObstacles: Face[], neighboringAgents: Agent[], deltaTime: number, speed?: number) {
         if (speed === undefined) {
             speed = this.speed;
         }
+        if (!USING_ORCA) {
+            neighboringObstacles = [];
+            neighboringAgents = [];
+        }
 
         // Update the target, if needed
-        await this.updateTarget();
+        await this.updateTarget(offsetTraversableFaces);
 
         // Set our preferred velocity
         let prefVel = new Point(0, 0);
@@ -121,14 +122,11 @@ export class Agent {
         // Get ORCA Agents from all neighboring Agents
         let orcaAgents: ORCAAgent[] = [];
         for(let neighboringAgent of neighboringAgents) {
-            if (!USING_ORCA) {
-                continue;
-            }
             orcaAgents.push(neighboringAgent.getORCAAgent());
         }
 
         // Set the current velocity to the ORCA velocity
-        this.curVel = getORCAVelocity(this.getORCAAgent(), orcaAgents, prefVel, speed, deltaTime);
+        this.curVel = getORCAVelocity(this.getORCAAgent(), orcaAgents, neighboringObstacles, prefVel, speed, deltaTime);
         this.curSpeed = speed;
     }
     // Iterate the Agent
@@ -198,9 +196,11 @@ export class Formation {
     // FormationData for each agent
     agentFormationData = new Map<Agent, AgentFormationData>();
     // Cache
-    faces: Face[];
-    constructor(faces: Face[]) {
-        this.faces = faces;
+    offsetTraversableFaces: Face[];
+    obstacleFaces: Face[];
+    constructor(offsetTraversableFaces: Face[], obstacleFaces: Face[]) {
+        this.offsetTraversableFaces = offsetTraversableFaces;
+        this.obstacleFaces = obstacleFaces;
     }
     addAgents(agents: Agent[]) {
         this.agents.push(...agents);
@@ -240,9 +240,9 @@ export class Formation {
     }
     async pathfind(dst: Point) {
         this.stop();
-        const IPOINT_DIST = this.speed*1; // IPOINTS are spaced between 1 Second of movement
-        const FORMATION_IPOINT_DIST = this.speed;
-        let result = await polyanya(this.faces, this.position, dst);
+        const IPOINT_DIST = this.speed*0.5; // IPOINTS are spaced by this distance (Speed*Time)
+        const FORMATION_IPOINT_DIST = this.speed*1; // Agents must get into formation within this distance (Speed*Time)
+        let result = await polyanya(this.offsetTraversableFaces, this.position, dst);
         // If the result exists, and involves actual movement,
         if (result != null && result.distance > 0) {
             // Create ipts as the mainTrack
@@ -251,6 +251,7 @@ export class Formation {
             // Create all of the other tracks, as shifted versions of the mainTrack
             // This may include `null`, if it shifts into an obstacle or somewhere too far
             let allTracks: (Point | null)[][] = [];
+            let numEndingFailures = 0;
             for(let i = 0; i < this.relativePositions.length; i++) {
                 let offset = this.relativePositions[i];
                 // Go through the mainTrack, and create the currentTrack using the offset above
@@ -263,15 +264,16 @@ export class Formation {
                     // Get the actual trackPt, based on the offset rotated by dir
                     let currentTrackPt = mainPt.plus(new Point(dir.x*offset.x - dir.y*offset.y, dir.x*offset.y + dir.y*offset.x));
                     // Point is only valid if obstales delay it no more than FORMATION_IPOINT_DIST from mainTrack
-                    let isValid = (await polyanya(this.faces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
+                    let isValid = (await polyanya(this.offsetTraversableFaces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
                     currentTrack.push(isValid ? currentTrackPt : null);
                 }
-                // TODO: Make these the closest valid points to "currentTrackPt"
+                // TODO: Make these nulls the closest valid points to "currentTrackPt"
                 if (currentTrack[0] == null) {
                     currentTrack[0] = this.mainTrack[0].p;
                 }
                 if (currentTrack[currentTrack.length-1] == null) {
-                    currentTrack[currentTrack.length-1] = this.mainTrack[this.mainTrack.length-1].p;
+                    numEndingFailures++;
+                    currentTrack[currentTrack.length-1] = this.mainTrack[Math.max(this.mainTrack.length-2-numEndingFailures, 0)].p;
                 }
                 allTracks.push(currentTrack);
             }
@@ -306,7 +308,7 @@ export class Formation {
         // <= 5 seconds away to join formation
         const MAX_START_FORMATION_DIST = this.speed*5;
         if (!this.getAgentFormationData(agent)!.isInFormation) {
-            await agent.setWaypoints(track, MAX_START_FORMATION_DIST);
+            await agent.setWaypoints(this.offsetTraversableFaces, track, MAX_START_FORMATION_DIST);
             if (!agent.isPathing()) {
                 // TODO: Handle if Agent cannot join formation
                 console.error('Could not join formation!', agent.position, track[0]);
@@ -398,7 +400,7 @@ export class Formation {
             for(let i = 0; i < this.agents.length; i++) {
                 let neighboringAgents = this.agents.slice();
                 neighboringAgents.splice(i, 1);
-                await this.agents[i].considerNeighboringAgents(neighboringAgents, deltaTime, agentSpeeds[i]);
+                await this.agents[i].considerNeighboringAgents(this.offsetTraversableFaces, this.obstacleFaces, neighboringAgents, deltaTime, agentSpeeds[i]);
             }
 
             // Iterate all Agents, with reciprocal collision avoidance

@@ -173,7 +173,7 @@ export async function loadMesh(url: string) {
 
 // Takes in an array of obstacles
 // Returns a list of traversable polygons
-export function meshFromObstacles(obstacles: number[][][], offset?: number): number[][][] {
+export function polyDataFromObstacles(obstacles: number[][][], offset?: number): number[][][] {
     // Offset the obstacles by the given offset
     if (offset !== undefined) {
         let obstacleFaces = obstacles.map(polyline => faceFromPolyline(polyline.map(pt => new Point(pt[0], pt[1]))));

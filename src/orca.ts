@@ -1,4 +1,4 @@
-import { EPSILON, Point } from "./math";
+import { EPSILON, Point, Face, getOrientation, getPointDist } from "./math";
 
 // A Halfplane is represented by a point and a normal
 class Halfplane {
@@ -158,10 +158,7 @@ function getORCA(a: ORCAAgent, b: ORCAAgent, delta: number): Halfplane {
     // u can be small, so we use norm for directional calculations
     let u = voProj.proj.minus(p);
     // Return the halfplane
-    return {
-        p: a.velOpt.plus(u.divide(2)),
-        n: voProj.norm,
-    };
+    return new Halfplane(a.velOpt.plus(u.divide(2)), voProj.norm);
 }
 
 // Let's say that we have a currentResult that is in all of the halfplanes and is closest to target,
@@ -245,14 +242,15 @@ function linearProgramming2(halfplanes: Halfplane[], target: Point, radius: numb
 // Solve the LP problem, by returning a |result| <= radius inside of all of the halfplanes,
 // Such that result is closest to target
 // If no solution exists, we pick the result that minimax's violation distance from the halfplane
-function solveLP(halfplanes: Halfplane[], target: Point, radius: number): Point {
-    let [result, failI] = linearProgramming2(halfplanes, target, radius, false);
+function solveLP(mandatoryHalfplanes: Halfplane[], halfplanes: Halfplane[], target: Point, radius: number): Point {
+    let [result, failI] = linearProgramming2(mandatoryHalfplanes.concat(halfplanes), target, radius, false);
     if (failI == -1) {
         // If the LP didn't fail, return the result
         return result;
     } else {
         // If the LP failed, we optimize for distance
         let distance = 0; // The current worst distance that we satisfy
+        failI = Math.max(failI - mandatoryHalfplanes.length, 0);
         for(let i = failI; i < halfplanes.length; i++) {
             let h = halfplanes[i];
             let hDir = h.n.rotate(Math.PI/2);
@@ -261,11 +259,11 @@ function solveLP(halfplanes: Halfplane[], target: Point, radius: number): Point 
             if (h.n.dot(result.minus(h.p)) >= -distance) {
                 continue;
             }
-            // Otherwise, we get the isohalfplanes
+            // Otherwise, we loosen each halfplane into an isohalfplanes (mandatoryHalfplanes are unmodified)
             // An isohalfplane is equidistant between its respective satisfied halfplanes and the newly violating halfplane
             // We want to pick a result that is on the isohalfplanes and closest to the new halfplane,
             // since that result balances violation between the new halfplane and the existent halfplanes 
-            let isoHalfplanes: Halfplane[] = [];
+            let isoHalfplanes: Halfplane[] = mandatoryHalfplanes.slice();
             for(let j = 0; j < i; j++) {
                 let other = halfplanes[j];
 
@@ -303,16 +301,85 @@ function solveLP(halfplanes: Halfplane[], target: Point, radius: number): Point 
     }
 }
 
-// For a given agent, trying to avoid other agents, and trying to optimize for a prefVelocity,
+function getORCAFromObstacle(agent: ORCAAgent, segment: [Point, Point], delta: number): Halfplane | null {
+    let a = segment[0].minus(agent.position).divide(delta);
+    let b = segment[1].minus(agent.position).divide(delta);
+    let r = agent.radius/delta;
+    let origin = new Point(0, 0);
+    // If O->a->b is CCW, our view is the same as from the interior of the polygon, so it doesn't matter
+    if (getOrientation(origin, a, b) >= -EPSILON) {
+        return null;
+    }
+    // TODO: Create ORCA properly even when colliding with segment
+
+    // Get the best aProj and bProj values
+    let aNorm = origin.minus(a).normalize();
+    let aProj = a.plus(aNorm.multiply(r));
+    let bNorm = origin.minus(b).normalize();
+    let bProj = b.plus(bNorm.multiply(r));
+
+    // Get the best linesegment Proj values
+    let segNorm = b.minus(a).rotate(-Math.PI/2).normalize();
+    // The seg is represented by seg[0] + t*segDir, where t ranges from 0 to 1.
+    let seg = [a.plus(segNorm.multiply(r)), b.plus(segNorm.multiply(r))];
+    let segDir = seg[1].minus(seg[0]).normalize();
+    // We get the t that is closest to the origin, and the tRange that bounds the segment
+    let tLeft = 0;
+    let tRight = getPointDist(seg[0], seg[1]);
+    let t = segDir.dot(origin.minus(seg[0]));
+    // Clamp t based on the range
+    t = Math.min(Math.max(t, tLeft), tRight);
+    // Get the segmentProj
+    let segProj = seg[0].plus(segDir.multiply(t));
+
+    // Use the closest proj to the origin
+    let ret: Halfplane;
+    if (segProj.magnitude2() < aProj.magnitude2() && segProj.magnitude2() < bProj.magnitude2()) {
+        ret = new Halfplane(segProj, segNorm);
+    } else if (aProj.magnitude2() < bProj.magnitude2()) {
+        ret = new Halfplane(aProj, aNorm);
+    } else {
+        ret = new Halfplane(bProj, bNorm);
+    }
+
+    /*
+    drawSegment(agent.position.plus(seg[0].multiply(delta)), agent.position.plus(seg[1].multiply(delta)), 'green');
+    drawPoint(agent.position.plus(a.multiply(delta)), 'green', r*delta);
+    drawPoint(agent.position.plus(b.multiply(delta)), 'green', r*delta);
+    let proj = agent.position.plus(ret.p.multiply(delta));
+    let dir = ret.n.rotate(Math.PI/2).multiply(agent.radius);
+    drawSegment(proj.minus(dir), proj.plus(dir), 'orange');
+    */
+
+    return ret;
+}
+
+// For a given agent, trying to avoid other agents/obstacles, and trying to optimize for a prefVelocity,
 // We return the induced ORCAVelocity
-export function getORCAVelocity(agent: ORCAAgent, otherAgents: ORCAAgent[], prefVelocity: Point, maxSpeed: number, delta: number): Point {
+export function getORCAVelocity(agent: ORCAAgent, otherAgents: ORCAAgent[], obstacles: Face[], prefVelocity: Point, maxSpeed: number, delta: number): Point {
+    // Get the ORCA VO's induced by the obstacle's line segments
+    let obstacleHalfplanes: Halfplane[] = [];
+    for(let obstacle of obstacles) {
+        let currentEdge = obstacle.rootEdge;
+        do {
+            currentEdge = currentEdge.next;
+            let a = currentEdge.originPoint;
+            let b = currentEdge.next.originPoint;
+
+            let halfplane = getORCAFromObstacle(agent, [a, b], delta);
+            if (halfplane != null) {
+                obstacleHalfplanes.push(halfplane);
+            }
+        } while(currentEdge != obstacle.rootEdge);
+    }
+
     // Get the ORCA VO's induced by the other agents
-    let halfplanes: Halfplane[] = []
+    let agentHalfplanes: Halfplane[] = [];
     for(let otherAgent of otherAgents) {
-        halfplanes.push(getORCA(agent, otherAgent, delta));
+        agentHalfplanes.push(getORCA(agent, otherAgent, delta));
     }
 
     // Return the optimal velocity by solving the LP
-    let optimalVelocity = solveLP(halfplanes, prefVelocity, maxSpeed);
+    let optimalVelocity = solveLP(obstacleHalfplanes, agentHalfplanes, prefVelocity, maxSpeed);
     return optimalVelocity;
 }
