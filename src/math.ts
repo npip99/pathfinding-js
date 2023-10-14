@@ -71,6 +71,12 @@ export class Point {
     }
 }
 
+// positiveOrientation == p3 is leftOf p1->p2 == the points are CCW
+// The value itself is roughly twice the signed area of the triangle enclosed
+export function getOrientation(p1: Point, p2: Point, p3: Point) {
+    return (p1.x - p3.x) * (p2.y - p3.y) - (p1.y - p3.y) * (p2.x - p3.x);
+}
+
 // f=0 => p1, f=1 => p2
 export function lerp(p1: Point, p2: Point, f: number) {
     return p1.multiply(1-f).plus(p2.multiply(f));
@@ -152,11 +158,6 @@ export function getIntersection(seg1A: Point, seg1B: Point, seg2A: Point, seg2B:
     return new Point(intersectionX, intersectionY);
 }
 
-// Positive is CCW, Negative is CW. 0 is Degenerate
-export function getTriangleSign(v1: Point, v2: Point, v3: Point) {
-    return (v2.x - v1.x) * (v3.y - v1.y) - (v2.y - v1.y) * (v3.x - v1.x);
-}
-
 // https://stackoverflow.com/questions/217578/how-can-i-determine-whether-a-2d-point-is-within-a-polygon
 // NOTE: This function only works with convex faces
 // Return 1 if inside, 0 if on boundary, -1 if on outside
@@ -171,7 +172,7 @@ export function isPointInFace(face: Face, p: Point) {
 
         // If p is collinear with an Edge,
         // then check if it's on the boundary of at least one edge
-        if (getTriangleSign(p, edgeSegment[0], edgeSegment[1]) == 0) {
+        if (getOrientation(p, edgeSegment[0], edgeSegment[1]) == 0) {
             isCollinear = true;
             let minX = Math.min(edgeSegment[0].x, edgeSegment[1].x);
             let maxX = Math.max(edgeSegment[0].x, edgeSegment[1].x);
@@ -276,7 +277,7 @@ function makeConvex(faces: Face[]) {
             let e1 = currentEdge;
             let e2 = e1.next;
             let e3 = e2.next;
-            if (getTriangleSign(e1.originPoint, e2.originPoint, e3.originPoint) <= 0) {
+            if (getOrientation(e1.originPoint, e2.originPoint, e3.originPoint) <= 0) {
                 let e4 = e3.next;
                 // Insert Ein and make a triangle
                 let Ein = new HalfEdge(e4.originPoint);
@@ -347,8 +348,8 @@ function canMergeTwoFaces(face: Face, edge: HalfEdge) {
     let theirBadj = findPrev(theirB);
 
     // Verify that convexity is held, if these triplets are each CCW
-    return getTriangleSign(theirBadj.originPoint, B.originPoint, ourBadj.originPoint) >= 0
-        && getTriangleSign(ourAadj.originPoint, A.originPoint, theirAadj.originPoint) >= 0;
+    return getOrientation(theirBadj.originPoint, B.originPoint, ourBadj.originPoint) >= 0
+        && getOrientation(ourAadj.originPoint, A.originPoint, theirAadj.originPoint) >= 0;
 }
 
 function mergeTwoFaces(face: Face, edge: HalfEdge): Face {
@@ -414,7 +415,7 @@ function mergeCollinearEdges(faces: Face[]) {
                 let edge3 = edge2.next;
                 let shareNeighbor = (edge1.twin == null && edge2.twin == null) ||
                 (edge1.twin != null && edge2.twin != null && edge1.twin.face == edge2.twin.face); 
-                if (shareNeighbor && getTriangleSign(edge1.originPoint, edge2.originPoint, edge3.originPoint) == 0) {
+                if (shareNeighbor && getOrientation(edge1.originPoint, edge2.originPoint, edge3.originPoint) == 0) {
                     edge1.next = edge3;
                     face.rootEdge = edge1;
                     // If the neighboring edge is not null,
@@ -583,7 +584,7 @@ export function markCorners(faces: Face[]) {
                     otherPoint = cornerEdge.next.originPoint;
                     cornerEdge = cornerEdge.twin;
                 }
-                if (getTriangleSign(currentEdge.originPoint, potentialCorner, otherPoint) < 0) {
+                if (getOrientation(currentEdge.originPoint, potentialCorner, otherPoint) < 0) {
                     potentialCorner.isCorner = true;
                     //drawPoint(nextEdge.originPoint, 'black');
                 }

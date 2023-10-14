@@ -1,4 +1,4 @@
-import { Point, Face, getPointDist, getTriangleSign, getIntersection, isPointInFace, HalfEdge } from "./math";
+import { Point, Face, getPointDist, getOrientation, getIntersection, isPointInFace, HalfEdge } from "./math";
 import { PriorityQueue } from "data-structure-typed";
 
 class SearchNode {
@@ -27,7 +27,7 @@ class SearchNode {
         }
         let g = this.g;
         let h;
-        if (getTriangleSign(this.root, this.startPoint, this.endPoint) == 0) {
+        if (getOrientation(this.root, this.startPoint, this.endPoint) == 0) {
             // If the edge is collinear to the root, just go through the closer point to dst
             let closerPoint = getPointDist(this.root, this.startPoint) < getPointDist(this.root, this.endPoint) ? this.startPoint : this.endPoint;
             h = getPointDist(this.root, closerPoint) + getPointDist(closerPoint, dst);
@@ -35,10 +35,10 @@ class SearchNode {
             // In the worst case, just go directly
             h = getPointDist(this.root, dst);
             // Check rouding the start corner
-            if (this.startPoint.isCorner && getTriangleSign(this.root, this.startPoint, dst) <= 0) {
+            if (this.startPoint.isCorner && getOrientation(this.root, this.startPoint, dst) <= 0) {
                 h = Math.max(h, getPointDist(this.root, this.startPoint) + getPointDist(this.startPoint, dst));
             }
-            if (this.endPoint.isCorner && getTriangleSign(this.root, this.endPoint, dst) >= 0) {
+            if (this.endPoint.isCorner && getOrientation(this.root, this.endPoint, dst) >= 0) {
                 h = Math.max(h, getPointDist(this.root, this.endPoint) + getPointDist(this.endPoint, dst));
             }
         }
@@ -61,8 +61,8 @@ interface PolyanyaPath {
 // Get the path on a terminal searchNode
 // Requires searchNode.halfedge.twin!.face == dstFace
 function getTerminalPath(searchNode: SearchNode, dst: Point): PolyanyaPath | null {
-    let startSign = getTriangleSign(searchNode.root, searchNode.startPoint, dst);
-    let endSign = getTriangleSign(searchNode.root, searchNode.endPoint, dst);
+    let startSign = getOrientation(searchNode.root, searchNode.startPoint, dst);
+    let endSign = getOrientation(searchNode.root, searchNode.endPoint, dst);
     // Construct Path
     let path: Point[] = [];
     let finalG = null;
@@ -109,10 +109,10 @@ function getTerminalPath(searchNode: SearchNode, dst: Point): PolyanyaPath | nul
 function getSuccessors(searchNode: SearchNode, dst: Point) {
     function getPastSegment(root: Point, other: Point, edgeLine: Point[], checkCW: boolean): Point[] | null {
         // Get orientation of projecting root->other onto the edgeLine
-        let startOrientation = getTriangleSign(root, other, edgeLine[0]);
-        let endOrientation = getTriangleSign(root, other, edgeLine[1]);
+        let startOrientation = getOrientation(root, other, edgeLine[0]);
+        let endOrientation = getOrientation(root, other, edgeLine[1]);
         // If the root isn't oriented CCW towards the edge, then we return the whole edge
-        if (getTriangleSign(root, edgeLine[0], edgeLine[1]) <= 0) {
+        if (getOrientation(root, edgeLine[0], edgeLine[1]) <= 0) {
             if (!checkCW) {
                 if (startOrientation > 0 && endOrientation >= 0) {
                     return edgeLine;
@@ -163,7 +163,7 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
                 return null;
             }
         }
-        console.error('All Cases Covered!', root, other, edgeLine, checkCW, startOrientation, endOrientation, getTriangleSign(root, edgeLine[0], edgeLine[1]));
+        console.error('All Cases Covered!', root, other, edgeLine, checkCW, startOrientation, endOrientation, getOrientation(root, edgeLine[0], edgeLine[1]));
         return null;
     }
 
@@ -172,8 +172,8 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
 
     // Check if the searchNode is degenerate (root is on [startPoint, endPoint])
     // NOTE: Is this guaranteed true when root is on startPoint/endPoint? Or should we check explicitly
-    let isDegenerate = getTriangleSign(searchNode.root, searchNode.startPoint, searchNode.endPoint) == 0;
-    // NOTE: It's sometimes possible for getTriangleSign(root, searchNode.startPoint, searchNode.endPoint),
+    let isDegenerate = getOrientation(searchNode.root, searchNode.startPoint, searchNode.endPoint) == 0;
+    // NOTE: It's sometimes possible for getOrientation(root, searchNode.startPoint, searchNode.endPoint),
     //       to be negative (Implying CW). Handle this better?
 
     // Otherwise, go through the edges of the opposite face
@@ -195,7 +195,7 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
         // Consider degenerate case
         if (isDegenerate) {
             // If the root is collinear with the successor edge, create a new degenerate successor
-            if (getTriangleSign(searchNode.root, edgeLine[0], edgeLine[1]) == 0) {
+            if (getOrientation(searchNode.root, edgeLine[0], edgeLine[1]) == 0) {
                 let newRoot = getPointDist(searchNode.root, edgeLine[0]) < getPointDist(searchNode.root, edgeLine[1]) ? edgeLine[0] : edgeLine[1];
                 if (newRoot.isCorner) {
                     let newG = searchNode.g + getPointDist(searchNode.root, newRoot);
@@ -235,14 +235,14 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
         }
 
         // If the root is collinear with the edge, handle the special case
-        if (getTriangleSign(searchNode.root, edgeLine[0], edgeLine[1]) == 0) {
+        if (getOrientation(searchNode.root, edgeLine[0], edgeLine[1]) == 0) {
             // Alternatively, we can just use the closer point as the next root
-            if (getTriangleSign(searchNode.startPoint, edgeLine[0], edgeLine[1]) == 0) {
+            if (getOrientation(searchNode.startPoint, edgeLine[0], edgeLine[1]) == 0) {
                 let newG = searchNode.g + getPointDist(searchNode.root, edgeLine[0]);
                 let newSearchNode = new SearchNode(edgeLine[0], edgeLine[0], processingEdge, edgeLine[0], newG, searchNode);
                 newSearchNode.TESTMARKER = 3;
                 successors.push(newSearchNode);
-            } else if (getTriangleSign(searchNode.endPoint, edgeLine[0], edgeLine[1]) == 0) {
+            } else if (getOrientation(searchNode.endPoint, edgeLine[0], edgeLine[1]) == 0) {
                 let newG = searchNode.g + getPointDist(searchNode.root, edgeLine[1]);
                 let newSearchNode = new SearchNode(edgeLine[1], edgeLine[1], processingEdge, edgeLine[1], newG, searchNode);
                 newSearchNode.TESTMARKER = 4;
@@ -255,11 +255,11 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
 
         // Check around the endpoint Corner,
         // Check triangleSign of edgeLine bounds for if cornering is even necessary
-        if (searchNode.endPoint.isCorner && (getTriangleSign(searchNode.root, searchNode.endPoint, edgeLine[0]) > 0 || getTriangleSign(searchNode.root, searchNode.endPoint, edgeLine[1]) > 0)) {
+        if (searchNode.endPoint.isCorner && (getOrientation(searchNode.root, searchNode.endPoint, edgeLine[0]) > 0 || getOrientation(searchNode.root, searchNode.endPoint, edgeLine[1]) > 0)) {
             let pastEndCCW = getPastSegment(searchNode.root, searchNode.endPoint, edgeLine, false);
             if (pastEndCCW != null) {
                 // Set the nextRoot, which might be the seg if it's collinear
-                let nextRoot = getTriangleSign(searchNode.endPoint, pastEndCCW[0], pastEndCCW[1]) == 0 ? pastEndCCW[1] : searchNode.endPoint;
+                let nextRoot = getOrientation(searchNode.endPoint, pastEndCCW[0], pastEndCCW[1]) == 0 ? pastEndCCW[1] : searchNode.endPoint;
                 let newG = searchNode.g + getPointDist(searchNode.root, searchNode.endPoint) + getPointDist(searchNode.endPoint, nextRoot);
                 let newSearchNode = new SearchNode(pastEndCCW[0], pastEndCCW[1], processingEdge, nextRoot, newG, searchNode);
                 newSearchNode.TESTMARKER = 5;
@@ -271,10 +271,10 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
             }
         }
         // Check around the startpoint Corner
-        if (searchNode.startPoint.isCorner && (getTriangleSign(searchNode.root, searchNode.startPoint, edgeLine[0]) < 0 || getTriangleSign(searchNode.root, searchNode.startPoint, edgeLine[1]) < 0)) {
+        if (searchNode.startPoint.isCorner && (getOrientation(searchNode.root, searchNode.startPoint, edgeLine[0]) < 0 || getOrientation(searchNode.root, searchNode.startPoint, edgeLine[1]) < 0)) {
             let pastStartCW = getPastSegment(searchNode.root, searchNode.startPoint, edgeLine, true);
             if (pastStartCW != null) {
-                let nextRoot = getTriangleSign(searchNode.startPoint, pastStartCW[0], pastStartCW[1]) == 0 ? pastStartCW[0] : searchNode.startPoint;
+                let nextRoot = getOrientation(searchNode.startPoint, pastStartCW[0], pastStartCW[1]) == 0 ? pastStartCW[0] : searchNode.startPoint;
                 let newG = searchNode.g + getPointDist(searchNode.root, searchNode.startPoint) + getPointDist(searchNode.startPoint, nextRoot);
                 let newSearchNode = new SearchNode(pastStartCW[0], pastStartCW[1], processingEdge, nextRoot, newG, searchNode);
                 newSearchNode.TESTMARKER = 5.5;
