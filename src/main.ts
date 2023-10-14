@@ -4,7 +4,7 @@ import { loadMesh, loadMaze, loadPolyData, meshFromObstacles } from "./utils";
 import { Agent, Formation } from "./agent";
 
 async function main() {
-    const AGENT_RADIUS = 0.5;
+    const AGENT_RADIUS = 0.3;
     //const faces = loadPolyData(polyData1);
 
     //const MAZE_URL = 'https://api.allorigins.win/raw?url=https://pastebin.com/raw/GWRCSyUp';
@@ -54,11 +54,11 @@ async function main() {
     // Constants
     let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(8.5, -1.5), agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(10.5, -1.5), agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(11.5, -1.5), agentSpeed, offsetObstacleFaces),
-        new Agent(new Point(12.5, -1.5), agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(5.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(8.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(10.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
+        new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed, offsetObstacleFaces),
     ];
     let formation = new Formation(offsetObstacleFaces);
     formation.addAgents(agents);
@@ -141,11 +141,19 @@ async function main() {
             }
             await formation.pathfind(lastClick);
         }
-        // Move along path code
-        for(let agent of agents) {
-            agent.iterate(1/60);
+        // Iterate all agents
+        let deltaTime = 1/60;
+        for(let i = 0; i < agents.length; i++) {
+            let agent = agents[i];
+            let otherAgents = agents.slice();
+            otherAgents.splice(i, 1);
+            await agent.considerNeighboringAgents(otherAgents, deltaTime);
         }
-        await formation.iterate(1/60);
+        for(let agent of agents) {
+            agent.iterate(deltaTime);
+        }
+        // TODO: Store formation agents in the same datastructure, so that all agents can ORCA
+        await formation.iterate(deltaTime);
         // Render code
         const DRAW_AGENT_PATHING = false;
         const DRAW_DEBUG_TRACKS = false;
@@ -161,13 +169,13 @@ async function main() {
             if (formation.getAgentFormationData(agent)!.isInFormation && agent.prevVel !== undefined) {
                 isRunning = agent.prevVel.magnitude() > formation.speed + EPSILON;
             }
-            drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green');
+            drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green', agent.radius);
             if (DRAW_AGENT_PATHING && agent.path.length > 0) {
                 drawPath([agent.position, ...agent.path]);
             }
         }
         if (DRAW_DEBUG_TRACKS && formation.mainTrack != null) {
-            drawPoint(formation.position, 'purple');
+            drawPoint(formation.position, 'purple', 0.2, true);
             let mainTrack = formation.mainTrack;
             // For each point along the main track,
             for(let i = 0; i < mainTrack.length; i++) {
@@ -178,12 +186,12 @@ async function main() {
                     if (agentFormationData.isInFormation) {
                         let pt = agentFormationData.track[i];
                         if (pt != null) {
-                            drawPoint(pt, 'green', 1);
+                            drawPoint(pt, 'green', 0.1, true);
                         }
                     }
                 }
                 // And, draw the main track point
-                drawPoint(mainTrack[i].p, 'blue', 1);
+                drawPoint(mainTrack[i].p, 'blue', 0.1, true);
             }
         }
 

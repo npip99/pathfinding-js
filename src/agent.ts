@@ -1,14 +1,22 @@
 import { Point, Face, EPSILON, getPointDist, lerp } from "./math";
 import { polyanya } from "./polyanya";
 import { hungarian } from "./hungarian";
+import { ORCAAgent, getORCAVelocity } from "./orca";
+
+const USING_ORCA = true;
 
 export class Agent {
     // Current position
     position: Point;
-    // Current speed
+    // Agent Radius
+    radius: number;
+    // Agent Max speed
     speed: number;
     // Previous velocity
     prevVel = new Point(0, 0);
+    // Current velocity and speed
+    curVel = new Point(0, 0);
+    curSpeed = 0;
     // Waypoints are points along the macro-scale path
     waypoints: (Point | null)[] = [];
     // Path is the current path to waypoints[0]
@@ -17,10 +25,18 @@ export class Agent {
     curTarget: Point | null = null;
     // Cache
     faces: Face[];
-    constructor(position: Point, speed: number, faces: Face[]) {
+    constructor(position: Point, radius: number, speed: number, faces: Face[]) {
         this.position = position;
+        this.radius = radius;
         this.speed = speed;
         this.faces = faces;
+    }
+    getORCAAgent(): ORCAAgent {
+        return {
+            position: this.position,
+            velOpt: this.prevVel,
+            radius: this.radius,
+        };
     }
     pathDistRemaining() {
         let totalPathLength = 0;
@@ -41,7 +57,10 @@ export class Agent {
         this.curTarget = null;
     }
     isPathing() {
-        return this.curTarget != null;
+        return this.hasAnotherTarget() || (this.curTarget != null && this.position.minus(this.curTarget).magnitude() > EPSILON);
+    }
+    hasAnotherTarget() {
+        return this.path.length > 1 || this.waypoints.length > 1;
     }
     // Set Agent's target for this iteration
     async updateTarget(maxPathDist?: number, initializing: boolean = false) {
@@ -77,45 +96,53 @@ export class Agent {
             // Use the next path
             this.curTarget = this.path[0];
         }
-        // If we've already reached the target, pop it and update target
-        if (this.position.minus(this.curTarget).magnitude() < EPSILON) {
-            this.position = this.curTarget;
+        // If we've already reached the target, and there's more, pop it and update target
+        if (this.hasAnotherTarget() && this.position.minus(this.curTarget).magnitude() < this.radius) {
             this.curTarget = null;
             await this.updateTarget();
         }
     }
-    // Iterate the vec
-    async iterate(deltaTime: number, speed?: number) {
-        // Update the target
-        await this.updateTarget();
+    // Takes all neighboringAgents into consideration prior to iteration
+    async considerNeighboringAgents(neighboringAgents: Agent[], deltaTime: number, speed?: number) {
         if (speed === undefined) {
             speed = this.speed;
         }
 
-        // Our preferred velocity
-        let prefVel = new Point(0, 0);
+        // Update the target, if needed
+        await this.updateTarget();
 
-        // If we have no target, our pref vel is nothing
-        if (this.curTarget == null) {
-            prefVel = new Point(0, 0);
-        } else {
-            // Otherwise, our pref vel is Displacement/Time (Capped at max speed)
+        // Set our preferred velocity
+        let prefVel = new Point(0, 0);
+        if (this.curTarget != null) {
+            // If there's a curTarget, our prefVelocity is prefDisplacement/Time
             prefVel = this.curTarget.minus(this.position).divide(deltaTime);
-            if (prefVel.magnitude() > speed) {
-                prefVel = prefVel.normalize().multiply(speed);
-            }
         }
 
-        // Iterate using the prefVel
-        let deltaPos = prefVel.multiply(deltaTime);
+        // Get ORCA Agents from all neighboring Agents
+        let orcaAgents: ORCAAgent[] = [];
+        for(let neighboringAgent of neighboringAgents) {
+            if (!USING_ORCA) {
+                continue;
+            }
+            orcaAgents.push(neighboringAgent.getORCAAgent());
+        }
+
+        // Set the current velocity to the ORCA velocity
+        this.curVel = getORCAVelocity(this.getORCAAgent(), orcaAgents, prefVel, speed, deltaTime);
+        this.curSpeed = speed;
+    }
+    // Iterate the Agent
+    iterate(deltaTime: number) {
+        // Iterate using the curVel
+        let deltaPos = this.curVel.multiply(deltaTime);
         this.position = this.position.plus(deltaPos);
 
         // timeUsed is how much it did move, versus how much it moves per second
-        let timeUsed = deltaPos.magnitude() / speed;
+        let timeUsed = deltaPos.magnitude() / this.curSpeed;
         let timeRemaining = Math.max(deltaTime - timeUsed, 0);
 
         // Save the most recent velocity
-        this.prevVel = deltaPos.divide(timeUsed);
+        this.prevVel = timeUsed == 0 ? new Point(0, 0) : deltaPos.divide(timeUsed);
 
         // Return any remaining time to the caller
         return timeRemaining;
@@ -204,7 +231,7 @@ export class Formation {
         if (this.mainTrack != null) {
             this.mainTrack = null;
             for(let agent of this.agents) {
-                if (this.getAgentFormationData(agent)!.isInFormation && agent.isPathing()) {
+                if (this.getAgentFormationData(agent)!.isInFormation) {
                     agent.stop();
                     this.getAgentFormationData(agent)!.isInFormation = false;
                 }
@@ -255,6 +282,8 @@ export class Formation {
                 let trackCosts: number[] = [];
                 for(let j = 0; j < allTracks.length; j++) {
                     // Cost = Distance^2 between agent's position and track start point
+                    // TODO: Make this use actual distance rather than Euclidean Distance, up to a limit
+                    // (Cost=inf beyond that limit point, which would cause the unit to fall out of formation)
                     trackCosts.push(Math.pow(getPointDist(this.agents[i].position, allTracks[j][0]!), 2));
                 }
                 costMatrix.push(trackCosts);
@@ -332,19 +361,16 @@ export class Formation {
 
         // Generate the ideal speeds for each Agent
         let idealSpeeds = Array(this.agents.length);
-        if (minDistanceRemaining == null) {
-            // If there's no agents in formation, just return
-            return idealSpeeds;
-        }
         // Ideal speed is based on each agent's comparison to the agent that's furthest along the track
         for(let i = 0; i < this.agents.length; i++) {
             let agent = this.agents[i];
             if (!this.getAgentFormationData(agent)!.isInFormation) {
+                idealSpeeds[i] = this.speed;
                 continue;
             }
             let distanceRemaining = distanceRemainings[i];
-            // If this agent is behind,
-            if (minDistanceRemaining < distanceRemaining - EPSILON) {
+            // If this agent is behind the agent that has made the most process,
+            if (minDistanceRemaining != null && minDistanceRemaining < distanceRemaining - EPSILON) {
                 // Check how far the agent is behind
                 let deltaDist = (distanceRemaining - minDistanceRemaining);
                 // And speed up by the necessary amount to catchup this frame.
@@ -368,6 +394,13 @@ export class Formation {
             // Get Ideal Speed for all Agents
             let agentSpeeds = this.getIdealSpeeds(deltaTime);
 
+            // Have all agents consider collision avoidance
+            for(let i = 0; i < this.agents.length; i++) {
+                let neighboringAgents = this.agents.slice();
+                neighboringAgents.splice(i, 1);
+                await this.agents[i].considerNeighboringAgents(neighboringAgents, deltaTime, agentSpeeds[i]);
+            }
+
             // Iterate all Agents, with reciprocal collision avoidance
             let remainingTimes = Array(this.agents.length);
             for(let i = 0; i < this.agents.length; i++) {
@@ -376,19 +409,20 @@ export class Formation {
                     continue;
                 }
                 // Iterate this agent
-                remainingTimes[i] = await agent.iterate(deltaTime, agentSpeeds[i]);
+                remainingTimes[i] = agent.iterate(deltaTime);
             }
             // Iterate again, with any remaining time, using strict collision avoidance
-            for(let i = 0; i < this.agents.length; i++) {
+            // TODO: Implement an ORCA run assuming other agents won't move
+            /*for(let i = 0; i < this.agents.length; i++) {
                 let agent = this.agents[i];
                 if (!this.getAgentFormationData(agent)!.isInFormation) {
                     continue;
                 }
                 // Iterate again with any remaining time
                 if (remainingTimes[i] > EPSILON) {
-                    await agent.iterate(remainingTimes[i], agentSpeeds[i]);
+                    await agent.iterate(remainingTimes[i]);
                 }
-            }
+            }*/
 
             // Get the status of agents at end-of-frame
             let bestDistanceRemaining: number | null = null;

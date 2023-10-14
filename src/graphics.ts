@@ -30,11 +30,19 @@ export function drawSegment(p1: Point, p2: Point, color?: string) {
     ctx.stroke();
 }
 
-export function drawPoint(p: Point, color?: string, radius=5) {
+export function drawPoint(p: Point, color?: string, radius=5, useSquare=false) {
     if (color !== undefined) {
         ctx.fillStyle = color;
     }
-    ctx.fillRect(SCALE*p.x-Math.floor(radius/2), -SCALE*p.y-Math.floor(radius/2), radius, radius);
+    radius *= SCALE;
+    if (useSquare) {
+        ctx.fillRect(SCALE*p.x-Math.floor(radius/2), -SCALE*p.y-Math.floor(radius/2), radius, radius);
+    } else {
+        ctx.beginPath();
+        ctx.arc(SCALE * p.x, -SCALE * p.y, radius, 0, Math.PI * 2, true);
+        ctx.closePath();
+        ctx.fill();
+    }
 }
 
 export function drawFace(face: Face, fillColor: string) {

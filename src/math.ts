@@ -54,8 +54,17 @@ export class Point {
     dot(other: Point) {
         return this.x*other.x + this.y*other.y;
     }
+    rotate(theta: number) {
+        return new Point(
+            Math.cos(theta)*this.x - Math.sin(theta)*this.y,
+            Math.sin(theta)*this.x + Math.cos(theta)*this.y,
+        );
+    }
+    magnitude2() {
+        return this.x*this.x + this.y*this.y;
+    }
     magnitude() {
-        return Math.sqrt(this.x*this.x + this.y*this.y);
+        return Math.sqrt(this.magnitude2());
     }
     normalize() {
         return this.divide(this.magnitude());
