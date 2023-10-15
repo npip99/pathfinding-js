@@ -173,74 +173,54 @@ export async function loadMesh(url: string) {
 
 // Takes in an array of obstacles
 // Returns a list of traversable polygons
-export function polyDataFromObstacles(obstacles: number[][][], offset?: number): number[][][] {
-    // Offset the obstacles by the given offset
-    if (offset !== undefined) {
-        let obstacleFaces = obstacles.map(polyline => faceFromPolyline(polyline.map(pt => new Point(pt[0], pt[1]))));
-        for(let i = 0; i < obstacleFaces.length; i++) {
-            obstacleFaces[i] = offsetFace(obstacleFaces[i], offset);
-        }
-        obstacles = obstacleFaces.map(face => polylineFromFace(face).map(pt => [pt.x, pt.y]));
-    }
-
-    // Get bounds
-    let minX = obstacles[0][0][0];
-    let maxX = obstacles[0][0][0];
-    let minY = obstacles[0][0][1];
-    let maxY = obstacles[0][0][1];
+export function traverableFacesFromObstacles(boundingFace: Face, obstacles: Face[]): Face[] {
+    // Convert obstacles into points and edges,
+    // Starting with the bounding face
+    let points: number[][] = polylineFromFace(boundingFace).map(pt => [pt.x, pt.y]);
+    let edges: number[][] = points.map((_, index) => [index, (index + 1) % points.length]);
     for(let obstacle of obstacles) {
-        for(let point of obstacle) {
-            minX = Math.min(minX, point[0]);
-            maxX = Math.max(maxX, point[0]);
-            minY = Math.min(minY, point[1]);
-            maxY = Math.max(maxY, point[1]);
+        if (obstacle.rootEdge == obstacle.rootEdge.next) {
+            continue;
         }
-    }
-    // Set Top-Left corner
-    maxY = -1;
-    minX = 1;
-    // Give margin to Bottom-Right corner
-    maxX += 5;
-    minY -= 5;
+        let firstPointIndex = points.length;
+        let currentEdge = obstacle.rootEdge;
+        do {
+            // Add the point and edge
+            let point = currentEdge.next.originPoint;
+            points.push([point.x, point.y]);
+            edges.push([points.length-1, points.length]);
 
-    // Convert obstacles into points and edges
-    let points: number[][] = [[minX, maxY], [maxX, maxY], [maxX, minY], [minX, minY]];
-    let edges: number[][] = [];
-    for(let obstacle of obstacles) {
-        points.push(...obstacle);
-        for(let i = 0; i < obstacle.length; i++) {
-            let nextI = (i+1) % obstacle.length;
-            edges.push([points.length-obstacle.length+i, points.length-obstacle.length+nextI]);
-        }
+            // Iterate Next
+            currentEdge = currentEdge.next;
+        } while (currentEdge != obstacle.rootEdge);
+        // Loop the last edge
+        edges[edges.length-1][1] = firstPointIndex;
     }
 
     // Create the triangulation
     cleanPSLG(points, edges);
     let cdt = cdt2d(points, edges) as number[][];
-    let triangulation = cdt.map(edge => edge.map(i => points[i]));
+    let rawTriangulation = cdt.map(edge => edge.map(i => points[i]));
 
     // Filter the triangulation to only include traversable polygons
-    let obstacleFaces: Face[] = [];
-    for(let obstacle of obstacles) {
-        let polyline = obstacle.map(pt => new Point(pt[0], pt[1]));
-        obstacleFaces.push(faceFromPolyline(polyline));
-    }
-    let filteredTriangulation: number[][][] = [];
-    for(let triangle of triangulation) {
-        let ptTriangle = triangle.map(pt => new Point(pt[0], pt[1]));
-        let center = ptTriangle[0].plus(ptTriangle[1]).plus(ptTriangle[2]).divide(3);
+    let rawTraversableTriangulation: number[][][] = [];
+    for(let rawTriangle of rawTriangulation) {
+        let trianglePolyline = rawTriangle.map(pt => new Point(pt[0], pt[1]));
+        let centroid = trianglePolyline[0].plus(trianglePolyline[1]).plus(trianglePolyline[2]).divide(3);
         let traversable = true;
-        for(let obstacleFace of obstacleFaces) {
-            if (isPointInFace(obstacleFace, center) == 1) {
+        for(let obstacle of obstacles) {
+            // If the triangle is inside of the obstacle, or outside of the boundingFace,
+            // It's not traversable
+            if (isPointInFace(obstacle, centroid) == 1 || isPointInFace(boundingFace, centroid) == -1) {
                 traversable = false;
                 break;
             }
         }
         if (traversable) {
-            filteredTriangulation.push(triangle);
+            rawTraversableTriangulation.push(rawTriangle);
         }
     }
 
-    // Return the filtered triangles
-    return filteredTriangulation;
+    // Return the traversable triangulation
+    return loadPolyData(rawTraversableTriangulation);
 }

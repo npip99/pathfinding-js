@@ -1,16 +1,18 @@
 import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
-import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace } from "./math";
-import { loadMesh, loadMaze, loadPolyData, polyDataFromObstacles } from "./utils";
+import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace, faceFromPolyline, offsetFace } from "./math";
+import { loadMesh, loadMaze, loadPolyData, traverableFacesFromObstacles } from "./utils";
 import { Agent, Formation } from "./agent";
 
 async function main() {
     const AGENT_RADIUS = 0.3;
+    const MARGIN = 1; // Margin between the drawing region and the bounding Face
     //const faces = loadPolyData(polyData1);
 
     //const MAZE_URL = 'https://api.allorigins.win/raw?url=https://pastebin.com/raw/GWRCSyUp';
     //const mazePolyData = loadMaze(await getUrlContents(MAZE_URL));
     //const faces = loadPolyData(mazePolyData);
 
+    // Obstacles as raw polylines
     const rawObstacles = [
         [[10, -10], [10, -20], [20, -20], [20, -10]],
         [[30, -30], [30, -40], [60, -40], [60, -30]],
@@ -18,17 +20,27 @@ async function main() {
         // [[23, -10], [40, -5], [60, -15], [18, -20]],
         // [[23, -10], [40, -5], [60, -15], [5, -10]],
     ];
+    // Convert into obstacle faces
 
-    let traversablePolyData = polyDataFromObstacles(rawObstacles);
-    // TODO: Ensure that facets are cut into acute vertices, so that 0.99/sqrt(2) is guaranteed to be safe
-    let offsetTraversablePolyData = polyDataFromObstacles(rawObstacles, AGENT_RADIUS*0.99/Math.sqrt(2));
+    let minX = 0;
+    let maxY = 0;
+    let maxX = Math.max(...rawObstacles.map(rawPolyline => rawPolyline.map(pt => pt[0])).map(arr => Math.max(...arr))) + 5;
+    let minY = Math.min(...rawObstacles.map(rawPolyline => rawPolyline.map(pt => pt[1])).map(arr => Math.min(...arr))) - 5;
+    let boundingFace = faceFromPolyline([[minX, maxY], [minX, minY], [maxX, minY], [maxX, maxY]].map(pt => new Point(pt[0], pt[1])));
+    let obstacleFaces = rawObstacles.map(polyline => faceFromPolyline(polyline.map(pt => new Point(pt[0], pt[1]))));
+
+    let traversableFaces = traverableFacesFromObstacles(boundingFace, obstacleFaces);
+    // TODO: Cut facets into acute vertices during offset, so that 0.99/sqrt(2) is guaranteed to be safe
+    const OBSTACLE_OFFSET = AGENT_RADIUS*0.99/Math.sqrt(2);
+    let offsetTraversableFaces = traverableFacesFromObstacles(
+        offsetFace(boundingFace, -OBSTACLE_OFFSET),
+        obstacleFaces.map(face => offsetFace(face, OBSTACLE_OFFSET)),
+    );
 
     //const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
     //let meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
     //const meshPolyData = await loadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
-    let obstacleFaces = loadPolyData(rawObstacles);
-    let traversableFaces = loadPolyData(traversablePolyData);
-    let offsetTraversableFaces = loadPolyData(offsetTraversablePolyData);
+    //let traversableFaces = loadPolyData(meshPolyData);
 
     // Simplify the mesh, mark corners, and validate the mesh
     mergeAllFaces(traversableFaces);
@@ -41,18 +53,8 @@ async function main() {
         return;
     }
 
-    // Set the canvas dimensions to give room for the mesh
-    let maxX = 0;
-    let minY = 0;
-    for(let face of traversableFaces) {
-        let currentEdge = face.rootEdge;
-        do {
-            maxX = Math.max(maxX, currentEdge.originPoint.x);
-            minY = Math.min(minY, currentEdge.originPoint.y);
-            currentEdge = currentEdge.next;
-        } while (currentEdge != face.rootEdge);
-    }
-    setCanvasDimensions(Math.ceil(SCALE*(maxX+1)), Math.ceil(SCALE*(-minY+1)));
+    // Set the canvas dimensions based on the mesh and the MARGIN
+    setCanvasDimensions(Math.ceil(SCALE*(maxX+2*MARGIN)), Math.ceil(SCALE*(-minY+2*MARGIN)));
 
     // Constants
     let agentSpeed = 2;
@@ -63,7 +65,7 @@ async function main() {
         new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed),
         new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed),
     ];
-    let formation = new Formation(offsetTraversableFaces, obstacleFaces);
+    let formation = new Formation(boundingFace, obstacleFaces, offsetTraversableFaces);
     formation.addAgents(agents);
     agents = [];
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
@@ -77,7 +79,7 @@ async function main() {
     const ISOMETRIC_VIEW = false;
     let frameCount = 0;
 
-    let translate = [0, 0];
+    let translate = [MARGIN*SCALE, MARGIN*SCALE];
     let zoom = 1;
 
     let render = async function() {
@@ -155,7 +157,7 @@ async function main() {
             let agent = agents[i];
             let otherAgents = agents.slice();
             otherAgents.splice(i, 1);
-            await agent.considerNeighboringAgents(offsetTraversableFaces, traversableFaces, otherAgents, deltaTime);
+            await agent.considerNeighboringAgents(boundingFace, obstacleFaces, offsetTraversableFaces, otherAgents, deltaTime);
         }
         for(let agent of agents) {
             agent.iterate(deltaTime);

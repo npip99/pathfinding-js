@@ -204,7 +204,7 @@ Mesh Functions
 ====================
 */
 
-export function faceFromPolyline(polyline: Point[]) {
+export function faceFromPolyline(polyline: Point[]): Face {
     let rootEdge = new HalfEdge(polyline[0]);
 
     let prevEdge = rootEdge;
@@ -218,7 +218,7 @@ export function faceFromPolyline(polyline: Point[]) {
     return new Face(rootEdge, true);
 }
 
-export function polylineFromFace(face: Face) {
+export function polylineFromFace(face: Face): Point[] {
     let polyline: Point[] = [];
 
     let currentEdge = face.rootEdge;

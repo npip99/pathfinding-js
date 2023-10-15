@@ -356,17 +356,18 @@ function getORCAFromObstacle(agent: ORCAAgent, segment: [Point, Point], delta: n
 
 // For a given agent, trying to avoid other agents/obstacles, and trying to optimize for a prefVelocity,
 // We return the induced ORCAVelocity
-export function getORCAVelocity(agent: ORCAAgent, otherAgents: ORCAAgent[], obstacles: Face[], prefVelocity: Point, maxSpeed: number, delta: number): Point {
+export function getORCAVelocity(boundingFace: Face, obstacles: Face[], agent: ORCAAgent, otherAgents: ORCAAgent[], prefVelocity: Point, maxSpeed: number, delta: number): Point {
     // Get the ORCA VO's induced by the obstacle's line segments
     let obstacleHalfplanes: Halfplane[] = [];
-    for(let obstacle of obstacles) {
+    for(let obstacle of obstacles.concat(boundingFace)) {
         let currentEdge = obstacle.rootEdge;
         do {
             currentEdge = currentEdge.next;
             let a = currentEdge.originPoint;
             let b = currentEdge.next.originPoint;
 
-            let halfplane = getORCAFromObstacle(agent, [a, b], delta);
+            let seg: [Point, Point] = obstacle == boundingFace ? [b, a] : [a, b];
+            let halfplane = getORCAFromObstacle(agent, seg, delta);
             if (halfplane != null) {
                 obstacleHalfplanes.push(halfplane);
             }

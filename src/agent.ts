@@ -100,7 +100,7 @@ export class Agent {
         }
     }
     // Takes all neighboring Agents and Obstacles into consideration during the calculation of current velocity
-    async considerNeighboringAgents(offsetTraversableFaces: Face[], neighboringObstacles: Face[], neighboringAgents: Agent[], deltaTime: number, speed?: number) {
+    async considerNeighboringAgents(boundingFace: Face, neighboringObstacles: Face[], offsetTraversableFaces: Face[], neighboringAgents: Agent[], deltaTime: number, speed?: number) {
         if (speed === undefined) {
             speed = this.speed;
         }
@@ -126,7 +126,7 @@ export class Agent {
         }
 
         // Set the current velocity to the ORCA velocity
-        this.curVel = getORCAVelocity(this.getORCAAgent(), orcaAgents, neighboringObstacles, prefVel, speed, deltaTime);
+        this.curVel = getORCAVelocity(boundingFace, neighboringObstacles, this.getORCAAgent(), orcaAgents, prefVel, speed, deltaTime);
         this.curSpeed = speed;
     }
     // Iterate the Agent
@@ -196,11 +196,13 @@ export class Formation {
     // FormationData for each agent
     agentFormationData = new Map<Agent, AgentFormationData>();
     // Cache
-    offsetTraversableFaces: Face[];
+    boundingFace: Face;
     obstacleFaces: Face[];
-    constructor(offsetTraversableFaces: Face[], obstacleFaces: Face[]) {
-        this.offsetTraversableFaces = offsetTraversableFaces;
+    offsetTraversableFaces: Face[];
+    constructor(boundingFace: Face, obstacleFaces: Face[], offsetTraversableFaces: Face[]) {
+        this.boundingFace = boundingFace;
         this.obstacleFaces = obstacleFaces;
+        this.offsetTraversableFaces = offsetTraversableFaces;
     }
     addAgents(agents: Agent[]) {
         this.agents.push(...agents);
@@ -400,7 +402,7 @@ export class Formation {
             for(let i = 0; i < this.agents.length; i++) {
                 let neighboringAgents = this.agents.slice();
                 neighboringAgents.splice(i, 1);
-                await this.agents[i].considerNeighboringAgents(this.offsetTraversableFaces, this.obstacleFaces, neighboringAgents, deltaTime, agentSpeeds[i]);
+                await this.agents[i].considerNeighboringAgents(this.boundingFace, this.obstacleFaces, this.offsetTraversableFaces, neighboringAgents, deltaTime, agentSpeeds[i]);
             }
 
             // Iterate all Agents, with reciprocal collision avoidance
