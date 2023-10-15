@@ -136,8 +136,6 @@ async function main() {
             ctx.rotate(Math.PI / 4);
             ctx.translate(-rect.width/2, -rect.height/2);
         }
-        ctx.fillStyle = 'black';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
         for(let face of traversableFaces) {
             drawFace(face, 'white');
         }
@@ -176,7 +174,7 @@ async function main() {
             }
             drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green', agent.radius);
             if (DRAW_AGENT_PATHING && agent.path.length > 0) {
-                drawPath([agent.position, ...agent.path]);
+                drawPath([agent.position, ...agent.path], 'purple');
             }
         }
         if (DRAW_DEBUG_TRACKS && formation.mainTrack != null) {
