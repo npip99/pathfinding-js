@@ -32,14 +32,33 @@ class SearchNode {
             let closerPoint = getPointDist(this.root, this.startPoint) < getPointDist(this.root, this.endPoint) ? this.startPoint : this.endPoint;
             h = getPointDist(this.root, closerPoint) + getPointDist(closerPoint, dst);
         } else {
-            // In the worst case, just go directly
-            h = getPointDist(this.root, dst);
-            // Check rouding the start corner
-            if (this.startPoint.isCorner && getOrientation(this.root, this.startPoint, dst) <= 0) {
-                h = Math.max(h, getPointDist(this.root, this.startPoint) + getPointDist(this.startPoint, dst));
+            /*
+            // If dst is on the same side as r ([start, end] is CCW), then we flip
+            // This is in the Polyanya paper, but is it necessary? TODO: Prove/verify this
+            // If the geometry on the other side of [start, end] spins the cone around to shoot it back to dst,
+            // Wouldn't it fail the worst-g test? For proof, we can assert() that an edge is never used twice in a path
+            if (getOrientation(dst, this.startPoint, this.endPoint) > 0) {
+                let dir = this.endPoint.minus(this.startPoint).normalize();
+                let dstVec = dst.minus(this.startPoint);
+                let dstProj = dir.multiply(dstVec.dot(dir));
+                let dstProjDiff = dstProj.minus(dstVec);
+                dst = dst.plus(dstProjDiff.multiply(2));
             }
-            if (this.endPoint.isCorner && getOrientation(this.root, this.endPoint, dst) >= 0) {
-                h = Math.max(h, getPointDist(this.root, this.endPoint) + getPointDist(this.endPoint, dst));
+            */
+            // Check around the corners
+            // We can't check for {start/end}Point.isCorner, since h must be consistent
+            let cornerH = null;
+            if (getOrientation(this.root, this.startPoint, dst) <= 0) {
+                cornerH = Math.min(cornerH || Infinity, getPointDist(this.root, this.startPoint) + getPointDist(this.startPoint, dst));
+            }
+            if (getOrientation(this.root, this.endPoint, dst) >= 0) {
+                cornerH = Math.min(cornerH || Infinity, getPointDist(this.root, this.endPoint) + getPointDist(this.endPoint, dst));
+            }
+            // If we aren't going around the corners, we just go direct
+            if (cornerH == null) {
+                h = getPointDist(this.root, dst);
+            } else {
+                h = cornerH;
             }
         }
         let f = g + h;
@@ -327,9 +346,13 @@ export async function polyanya(faces: Face[], src: Point, dst: Point, maxDist?: 
 
     // Check if a direct path from within the same face is possible
     if (srcFace == dstFace) {
+        let dist = getPointDist(src, dst);
+        if (maxDist !== undefined && dist > maxDist) {
+            return null;
+        }
         return {
             path: [src, dst],
-            distance: getPointDist(src, dst),
+            distance: dist,
             searchNode: null,
         };
     }
@@ -344,7 +367,7 @@ export async function polyanya(faces: Face[], src: Point, dst: Point, maxDist?: 
         if (newSearchNode.halfedge.twin != null) {
             // Push to pq, as long as node isn't dead from maxDist
             let f = newSearchNode.getF(dst);
-            if (maxDist === undefined || f < maxDist) {
+            if (maxDist === undefined || f <= maxDist) {
                 if (passthrough) {
                     return newSearchNode;
                 } else {
