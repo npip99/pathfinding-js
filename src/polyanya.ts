@@ -1,4 +1,4 @@
-import { Point, Face, getPointDist, getOrientation, getIntersection, isPointInFace, HalfEdge } from "./math";
+import { Point, Face, getPointDist, getOrientation, getIntersection, isPointInFace, HalfEdge, EPSILON } from "./math";
 import { PriorityQueue } from "data-structure-typed";
 
 class SearchNode {
@@ -322,17 +322,34 @@ function getSuccessors(searchNode: SearchNode, dst: Point) {
     return successors;
 }
 
-export async function polyanya(faces: Face[], src: Point, dst: Point, maxDist?: number): Promise<PolyanyaPath | null> { // Point, Point
+// if strictDst = false, it's acceptable if dst is within Epsilon of a face
+export async function polyanya(faces: Face[], src: Point, dst: Point, maxDist?: number, strictDst: boolean = false): Promise<PolyanyaPath | null> { // Point, Point
     // Get Src + Dst Face
     let dstFace: Face | null = null;
     let srcFace: Face | null = null;
     // TODO: Optimize with R-Tree
+    function isPointAlmostInFace(face: Face, p: Point): 0 | 1 | -1 {
+        // Check around Epsilon
+        // TODO: Replace with checking if p is within epsilon of any edge
+        for(let dir of [new Point(0, 1), new Point(0, -1), new Point(1, 0), new Point(-1, 0)]) {
+            let ret: 0 | 1 | -1 = isPointInFace(face, p.plus(dir.multiply(EPSILON)));
+            if (ret >= 0) {
+                return ret;
+            }
+        }
+        return isPointInFace(face, p);
+    }
     for(let face of faces) {
-        if (srcFace == null && isPointInFace(face, src) >= 0) {
+        if (srcFace == null && isPointAlmostInFace(face, src) >= 0) {
             srcFace = face;
         }
-        if (dstFace == null && isPointInFace(face, dst) >= 0) {
-            dstFace = face;
+        if (dstFace == null && isPointAlmostInFace(face, dst) >= 0) {
+            if (strictDst && isPointInFace(face, dst) >= 0) {
+                dstFace = face;
+            }
+            if (!strictDst && isPointAlmostInFace(face, dst) >= 0) {
+                dstFace = face;
+            }
         }
         if (srcFace != null && dstFace != null) {
             break;

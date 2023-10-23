@@ -42,11 +42,13 @@ export class Agent {
         }
         return totalPathLength;
     }
+    // Set current waypoints, returning true on success
     async setWaypoints(offsetTraversableFaces: Face[], waypoints: (Point | null)[], maxStartDist?: number) {
         this.stop();
         this.waypoints = waypoints;
         // Update the current target
         await this.updateTarget(offsetTraversableFaces, maxStartDist, true);
+        return this.curTarget != null;
     }
     stop() {
         this.waypoints = [];
@@ -94,7 +96,7 @@ export class Agent {
             this.curTarget = this.path[0];
         }
         // If we've already reached the target, and there's more, pop it and update target
-        if (this.hasAnotherTarget() && this.position.minus(this.curTarget).magnitude() < this.radius) {
+        if (this.hasAnotherTarget() && this.position.minus(this.curTarget).magnitude() < this.radius*(1-1/Math.sqrt(2))) {
             this.curTarget = null;
             await this.updateTarget(offsetTraversableFaces);
         }
@@ -140,7 +142,7 @@ export class Agent {
         let timeRemaining = Math.max(deltaTime - timeUsed, 0);
 
         // Save the most recent velocity
-        this.prevVel = timeUsed == 0 ? new Point(0, 0) : deltaPos.divide(timeUsed);
+        this.prevVel = deltaPos.divide(deltaTime);
 
         // Return any remaining time to the caller
         return timeRemaining;
@@ -163,38 +165,217 @@ function createIPoints(path: Point[], d: number) {
     // Create ipts every time a distance d is accumulated
     // Start with d so that path[0] is an ipt
     let accumulatedDistance = d;
-    for(let i = 0; i < path.length-1; i++) {
-        let seg = [path[i], path[i+1]];
+    for(let i = path.length-1; i > 0; i--) {
+        let seg = [path[i-1], path[i]];
         let segLength = getPointDist(seg[0], seg[1]);
         let curLoc = d - accumulatedDistance;
         accumulatedDistance += segLength;
         while(accumulatedDistance >= d) {
             accumulatedDistance -= d;
-            ipts.push(new IPoint(lerp(seg[0], seg[1], curLoc/segLength), seg));
+            ipts.push(new IPoint(lerp(seg[1], seg[0], curLoc/segLength), seg));
             curLoc += d;
         }
     }
-    // TODO: Drop ipts[-1] if it's too close to path.lenth-1, but not if its src
+    // Before we push the last ipt, ensure the start points aren't too close together
+    // We check if we can pop the to-be 2nd to last row
+    if (ipts.length >= 2 && ipts[ipts.length-2].line == ipts[ipts.length-1].line && getPointDist(ipts[ipts.length-1].p, path[0]) < d) {
+        ipts.pop();
+        // If possible, center the to-be 2nd to last row
+        if (ipts.length >= 2 && ipts[ipts.length-2].line == ipts[ipts.length-1].line && ipts[ipts.length-1].line[0] == path[0]) {
+            ipts[ipts.length-1].p = ipts[ipts.length-2].p.plus(path[0]).divide(2);
+        }
+    }
     // Satisfies every unique IPoint.line is the same seg array reference
-    ipts.push(new IPoint(path[path.length-1], ipts[ipts.length-1].line));
+    ipts.push(new IPoint(path[0], ipts[ipts.length-1].line));
+    ipts.reverse();
 
     return ipts;
 }
 
-export interface AgentFormationData {
-    isInFormation: boolean,
-    track: (Point | null)[],
+class FormationAgent {
+    agent: Agent;
+    isInFormation: boolean = false;
+    trackManager: TrackManager | null = null;
+    trackPtIdx: number = -1;
+    secondaryTrackPtIdx: number = -1;
+    constructor(agent: Agent) {
+        this.agent = agent;
+    }
+    // Dist Remaining, including the number of agents ahead
+    getDistRemaining(mainTrack: Point[]): number {
+        if (this.trackManager == null) throw "Invalid";
+        // Get the distance for the agents current path
+        // TODO: If a detour is faster than mainTrack, make the detouring agent slower instead
+        let pathDist = this.agent.pathDistRemaining();
+        // Get the distance between the waypoints, as measured along the mainTrack
+        let secondaryPts = this.trackManager.secondaryPts[this.trackPtIdx]!;
+        for(let i = this.secondaryTrackPtIdx; i < secondaryPts.length-1; i++) {
+            pathDist += getPointDist(secondaryPts[i], secondaryPts[i+1]);
+        }
+        for(let i = this.trackPtIdx; i < mainTrack.length-1; i++) {
+            pathDist += getPointDist(mainTrack[i], mainTrack[i+1]);
+        }
+        return pathDist;
+    }
+    isPathing(): boolean {
+        return true;
+    }
+    // True if the next target can be iterated
+    canIterateNextTarget(): boolean {
+        if (this.trackManager == null) throw "Invalid";
+        if (this.trackManager.isFinished(this)) {
+            return false;
+        } else {
+            return this.trackManager.getNextIndices(this) == null;
+        }
+    }
+    // Try to iterate the target to the next target, returning true if iteration was successful
+    tryIterateTarget(): boolean {
+        if (this.trackManager == null) throw "Invalid";
+        if (this.trackManager.isFinished(this)) {
+            return false;
+        } else {
+            return this.trackManager!.iterateFormationAgent(this);
+        }
+    }
+    // Get the current target and the next target
+    getTarget(): [Point, Point | null] {
+        if (this.trackManager == null) throw "Invalid";
+        let target = this.trackManager.secondaryPts[this.trackPtIdx]![this.secondaryTrackPtIdx];
+        let nextIndices = this.trackManager.getNextIndices(this);
+        let nextTarget = null;
+        if (nextIndices != null) {
+            nextTarget = this.trackManager.secondaryPts[nextIndices[0]]![nextIndices[1]];
+        }
+        return [target, nextTarget];
+    }
+}
+
+class TrackManager {
+    pts: (Point | null)[];
+    secondaryPts: (Point[] | null)[];
+    lastValidPtIdx: number;
+    occupants: (FormationAgent | null)[][];
+    iPointDist: number;
+    constructor(pts: (Point | null)[], iPointDist: number) {
+        this.pts = pts;
+        this.secondaryPts = pts.map(() => null);
+        this.secondaryPts[0] = [pts[0]!];
+        this.lastValidPtIdx = 0;
+        this.occupants = pts.map(() => []);
+        this.iPointDist = iPointDist;
+    }
+    // Get num agents ahead
+    getNumAgentsAhead(formationAgent: FormationAgent) {
+        let trackPtIdx = formationAgent.trackPtIdx;
+        let secondaryTrackPtIdx = formationAgent.secondaryTrackPtIdx;
+        let numAgentsAhead = 0;
+        while(true) {
+            secondaryTrackPtIdx++;
+            if (secondaryTrackPtIdx == this.secondaryPts[trackPtIdx]!.length) {
+                trackPtIdx++;
+                secondaryTrackPtIdx = 0;
+                if (trackPtIdx == this.pts.length || this.secondaryPts[trackPtIdx] == null) {
+                    break;
+                }
+            }
+            if (this.occupants[trackPtIdx][secondaryTrackPtIdx] != null) {
+                numAgentsAhead++;
+            }
+        }
+        return numAgentsAhead;
+    }
+    // Get next indices. Returns null if finished or needs initialization
+    getNextIndices(formationAgent: FormationAgent): [number, number] | null {
+        let trackPtIdx = formationAgent.trackPtIdx;
+        let secondaryTrackPtIdx = formationAgent.secondaryTrackPtIdx;
+        // Go the next secondary track pt
+        secondaryTrackPtIdx++;
+        // If we've gone past the last secondary track pt,
+        if (secondaryTrackPtIdx == this.secondaryPts[trackPtIdx]!.length) {
+            // Go to the next track pt
+            trackPtIdx++;
+            while (trackPtIdx < this.pts.length && this.pts[trackPtIdx] == null) {
+                trackPtIdx++;
+            }
+            if (trackPtIdx == this.pts.length) {
+                return null;
+            }
+            secondaryTrackPtIdx = 0;
+            // If secondary hasn't been initialize yet, notify that
+            if (this.secondaryPts[trackPtIdx] == null) {
+                return null;
+            }
+        }
+        // Otherwise, return the new indices
+        return [trackPtIdx, secondaryTrackPtIdx];
+    }
+    // Get next update
+    getNextSecondary(): [Point, Point] | null {
+        if (this.lastValidPtIdx == this.pts.length-1) {
+            return null;
+        } else {
+            let nextPtIdx = this.lastValidPtIdx + 1;
+            while(this.pts[nextPtIdx] == null) {
+                nextPtIdx++;
+            }
+            return [this.pts[this.lastValidPtIdx]!, this.pts[nextPtIdx]!];
+        }
+    }
+    // Set next update, getting the index of this point in return
+    // Requires getNextSecondary(createIPoints) != null
+    setNextSecondary(secondaryPath: Point[]): number {
+        let nextPtIdx = this.lastValidPtIdx + 1;
+        while(this.pts[nextPtIdx] == null) {
+            nextPtIdx++;
+        }
+        secondaryPath = createIPoints(secondaryPath, this.iPointDist*1.01).map(ipt => ipt.p).slice(1);
+        this.secondaryPts[nextPtIdx] = secondaryPath;
+        this.occupants[nextPtIdx] = [...Array(secondaryPath.length)].map(() => null);
+        this.lastValidPtIdx = nextPtIdx;
+        return this.lastValidPtIdx;
+    }
+    // Set formation agent
+    setFormationAgent(formationAgent: FormationAgent, ptIdx: number, secondaryPtIdx: number) {
+        this.occupants[ptIdx][secondaryPtIdx] = formationAgent;
+        formationAgent.trackManager = this;
+        formationAgent.trackPtIdx = ptIdx;
+        formationAgent.secondaryTrackPtIdx = secondaryPtIdx;
+    }
+    // Get formation agent target
+    // Returns false if secondary must be iterated
+    iterateFormationAgent(formationAgent: FormationAgent): boolean {
+        if (this.isFinished(formationAgent)) throw 'Invalid';
+        let newIndices = this.getNextIndices(formationAgent);
+        if (newIndices == null) {
+            return false;
+        }
+        let [trackPtIdx, secondaryTrackPtIdx] = newIndices;
+        // Iterate onto the next point, only if it's not occupied
+        if (this.occupants[trackPtIdx][secondaryTrackPtIdx] == null) {
+            this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = null;
+            formationAgent.trackPtIdx = trackPtIdx;
+            formationAgent.secondaryTrackPtIdx = secondaryTrackPtIdx;
+            this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = formationAgent;
+        }
+        return true;
+
+    }
+    // Checks if the index pair is the last one
+    isFinished(formationAgent: FormationAgent) {
+        return formationAgent.trackPtIdx == this.pts.length-1 && formationAgent.secondaryTrackPtIdx == this.secondaryPts[this.pts.length-1]!.length-1;
+    }
 }
 
 export class Formation {
-    agents: Agent[] = [];
+    formationAgents: FormationAgent[] = [];
     position: Point;
     speed: number;
+    filePitch: number; // Distance between files
+    rankPitch: number; // Distance between ranks
     // Tracks for movement
     mainTrack: IPoint[] | null = null;
-    relativePositions: Point[] = [];
-    // FormationData for each agent
-    agentFormationData = new Map<Agent, AgentFormationData>();
+    trackManagers: TrackManager[] | null = null;
     // Cache
     boundingFace: Face;
     obstacleFaces: Face[];
@@ -205,46 +386,58 @@ export class Formation {
         this.offsetTraversableFaces = offsetTraversableFaces;
     }
     addAgents(agents: Agent[]) {
-        this.agents.push(...agents);
-        for(let agent of agents) {
-            this.agentFormationData.set(agent, {
-                isInFormation: false,
-                track: [],
-            })
-        }
+        this.formationAgents.push(...agents.map(agent => new FormationAgent(agent)));
         this.generateFormation();
-    }
-    getAgentFormationData(agent: Agent): AgentFormationData | null {
-        return this.agentFormationData.get(agent) || null;
     }
     generateFormation() {
         // TODO: Find a better meet-up position for all of the agents
-        this.position = this.agents[0].position;
-        this.speed = this.agents[0].speed;
-        this.relativePositions = [];
-        for(let i = 0; i < this.agents.length; i++) {
-            this.relativePositions.push(new Point(0, (this.agents.length-1)/2 - i));
-            if (this.speed == null || this.agents[i].speed < this.speed) {
-                this.speed = this.agents[i].speed;
+        this.position = this.formationAgents[0].agent.position;
+        this.speed = this.formationAgents[0].agent.speed;
+        for(let i = 0; i < this.formationAgents.length; i++) {
+            let formationAgent = this.formationAgents[i];
+            if (this.speed == null || formationAgent.agent.speed < this.speed) {
+                this.speed = formationAgent.agent.speed;
             }
         }
     }
     stop() {
         if (this.mainTrack != null) {
             this.mainTrack = null;
-            for(let agent of this.agents) {
-                if (this.getAgentFormationData(agent)!.isInFormation) {
-                    agent.stop();
-                    this.getAgentFormationData(agent)!.isInFormation = false;
+            for(let formationAgents of this.formationAgents) {
+                if (formationAgents.isInFormation) {
+                    formationAgents.agent.stop();
+                    formationAgents.isInFormation = false;
                 }
             }
         }
     }
     async pathfind(dst: Point) {
         this.stop();
-        const IPOINT_DIST = this.speed*0.5; // IPOINTS are spaced by this distance (Speed*Time)
+
+        const numAgents = this.formationAgents.length;
+        if (numAgents == 0) {
+            return;
+        }
+        this.filePitch = 2.2*this.formationAgents[0].agent.radius;
+        this.rankPitch = 2.2*this.formationAgents[0].agent.radius;
+        // More ranks than files
+        const numRanks = 3;//Math.min(Math.floor(2*Math.sqrt(numAgents)), numAgents);
+        const numFiles = Math.ceil(numAgents/numRanks);
+
+        let fileDisplacements = [0];
+        while(fileDisplacements.length < numFiles) {
+            let prev = fileDisplacements[fileDisplacements.length-1] || 0;
+            let prevSign = Math.sign(prev) || -1;
+            if (prevSign < 0) {
+                fileDisplacements.push(-prev + this.filePitch);
+            } else {
+                fileDisplacements.push(-prev);
+            }
+        }
+
+        const IPOINT_DIST = this.rankPitch*0.99;
         const FORMATION_IPOINT_DIST = this.speed*1; // Agents must get into formation within this distance (Speed*Time)
-        let result = await polyanya(this.offsetTraversableFaces, this.position, dst);
+        let result = await polyanya(this.offsetTraversableFaces, this.position, dst, undefined, true);
         // If the result exists, and involves actual movement,
         if (result != null && result.distance > 0) {
             // Create ipts as the mainTrack
@@ -252,123 +445,135 @@ export class Formation {
 
             // Create all of the other tracks, as shifted versions of the mainTrack
             // This may include `null`, if it shifts into an obstacle or somewhere too far
-            let allTracks: (Point | null)[][] = [];
-            let numEndingFailures = 0;
-            for(let i = 0; i < this.relativePositions.length; i++) {
-                let offset = this.relativePositions[i];
+            this.trackManagers = [];
+            for(let i = 0; i < fileDisplacements.length; i++) {
+                let offset = new Point(0, fileDisplacements[i]);
                 // Go through the mainTrack, and create the currentTrack using the offset above
                 let currentTrack: (Point | null)[] = [];
                 for(let j = 0; j < this.mainTrack.length; j++) {
                     // Get the mainTrack pt
                     let mainPt = this.mainTrack[j].p;
+                    // Just use it if there's no offset
+                    if (offset.magnitude() == 0) {
+                        currentTrack.push(mainPt);
+                        continue;
+                    }
                     // Get the direction along this mainTrack ipt
                     let dir = this.mainTrack[j].line[1].minus(this.mainTrack[j].line[0]).normalize();
                     // Get the actual trackPt, based on the offset rotated by dir
                     let currentTrackPt = mainPt.plus(new Point(dir.x*offset.x - dir.y*offset.y, dir.x*offset.y + dir.y*offset.x));
                     // Point is only valid if obstales delay it no more than FORMATION_IPOINT_DIST from mainTrack
-                    let isValid = (await polyanya(this.offsetTraversableFaces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST)) != null;
+                    let isValid = (await polyanya(this.offsetTraversableFaces, mainPt, currentTrackPt, offset.magnitude() + FORMATION_IPOINT_DIST, true)) != null;
                     currentTrack.push(isValid ? currentTrackPt : null);
                 }
-                // TODO: Make these nulls the closest valid points to "currentTrackPt"
-                if (currentTrack[0] == null) {
-                    currentTrack[0] = this.mainTrack[0].p;
+                // TODO: Make these nulls the closest valid points to "currentTrackPt",
+                // Still ensuring that the chosen start and end points don't overlap
+                for(let j = 0; j < Math.min(numRanks, this.mainTrack.length-1); j++) {
+                    if (currentTrack[j] == null) {
+                        currentTrack[j] = this.mainTrack[j].p;
+                    }
                 }
                 if (currentTrack[currentTrack.length-1] == null) {
-                    numEndingFailures++;
-                    currentTrack[currentTrack.length-1] = this.mainTrack[Math.max(this.mainTrack.length-2-numEndingFailures, 0)].p;
+                    currentTrack[currentTrack.length-1] = this.mainTrack[this.mainTrack.length-1].p;
                 }
-                allTracks.push(currentTrack);
+                this.trackManagers.push(new TrackManager(currentTrack, IPOINT_DIST));
+            }
+
+            let startPoints: [number, number][] = [];
+            for(let j = 0; j < numRanks; j++) {
+                for(let i = 0; i < numFiles; i++) {
+                    if (j == 0) {
+                        startPoints.push([i, 0]);
+                        continue;
+                    }
+                    let nextSecondary = this.trackManagers[i].getNextSecondary();
+                    if (nextSecondary != null) {
+                        let path = await polyanya(this.offsetTraversableFaces, nextSecondary[0], nextSecondary[1], 3*FORMATION_IPOINT_DIST);
+                        if (path != null) {
+                            let result = this.trackManagers[i].setNextSecondary(path.path);
+                            startPoints.push([i, result]);
+                        } else {
+                            console.error('Invalid!');
+                        }
+                    }
+                }
+            }
+            // TODO: Allow startPoints != this.formationAgents.length
+            if (startPoints.length > this.formationAgents.length) {
+                startPoints.splice(this.formationAgents.length, startPoints.length-this.formationAgents.length);
+            }
+            if (startPoints.length < this.formationAgents.length) {
+                this.stop();
+                console.error('Not enough Start Points for Hungarian Matching!');
+                return;
             }
 
             // Generate a cost matrix between each track and each agent
             let costMatrix: number[][] = [];
-            for(let i = 0; i < this.agents.length; i++) {
+            for(let i = 0; i < this.formationAgents.length; i++) {
                 let trackCosts: number[] = [];
-                for(let j = 0; j < allTracks.length; j++) {
+                for(let j = 0; j < startPoints.length; j++) {
+                    let [file, rankIdx] = startPoints[j];
+                    let pt = this.trackManagers[file].pts[rankIdx]!;
                     // Cost = Distance^2 between agent's position and track start point
                     // TODO: Make this use actual distance rather than Euclidean Distance, up to a limit
                     // (Cost=inf beyond that limit point, which would cause the unit to fall out of formation)
-                    trackCosts.push(Math.pow(getPointDist(this.agents[i].position, allTracks[j][0]!), 2));
+                    let extraFormationWalking = rankIdx*this.rankPitch;
+                    trackCosts.push(Math.pow(getPointDist(this.formationAgents[i].agent.position, pt) + extraFormationWalking, 3));
                 }
                 costMatrix.push(trackCosts);
             }
             // Permute the tracks so that they match with the best agent
             // This gets the permutation with the minimal Sum(Cost) from costMatrix
-            let trackPermutation = hungarian(costMatrix);
-            allTracks = allTracks.map((_, i) => allTracks[trackPermutation[i]]);
+            let startPointPermutation = hungarian(costMatrix);
+            startPoints = startPoints.map((_, i) => startPoints[startPointPermutation[i]]);
 
             // Initialize all of the agents along their track
-            for(let i = 0; i < this.agents.length; i++) {
-                this.getAgentFormationData(this.agents[i])!.isInFormation = false;
-                await this.startTrack(this.agents[i], allTracks[i]);
+            const MAX_START_FORMATION_DIST = this.speed*5;
+            for(let i = 0; i < this.formationAgents.length; i++) {
+                let formationAgent = this.formationAgents[i];
+                let [file, rankIdx] = startPoints[i];
+                let pt = this.trackManagers[file].secondaryPts[rankIdx]![0];
+                let success = await formationAgent.agent.setWaypoints(this.offsetTraversableFaces, [pt], MAX_START_FORMATION_DIST);
+                if (success) {
+                    this.trackManagers[file].setFormationAgent(formationAgent, rankIdx, 0);
+                    formationAgent.isInFormation = true;
+                } else {
+                    console.error('Could not join formation!', formationAgent, formationAgent.agent.position.copy(), pt);
+                    formationAgent.isInFormation = false;
+                }
             }
         } else {
             console.error('Formation could not pathfind!');
         }
-    }
-    async startTrack(agent: Agent, track: (Point | null)[]) {
-        // <= 5 seconds away to join formation
-        const MAX_START_FORMATION_DIST = this.speed*5;
-        if (!this.getAgentFormationData(agent)!.isInFormation) {
-            await agent.setWaypoints(this.offsetTraversableFaces, track, MAX_START_FORMATION_DIST);
-            if (!agent.isPathing()) {
-                // TODO: Handle if Agent cannot join formation
-                console.error('Could not join formation!', agent.position, track[0]);
-                return;
-            }
-            this.agentFormationData.set(agent, {
-                isInFormation: true,
-                track: track,
-            })
-        }
-    }
-    // Get the amount of distance remaining for this agent
-    // Returns null if Formation isn't pathing, or the Agent isn't in formation
-    getDistanceRemaining(agent: Agent) {
-        if (this.mainTrack == null) {
-            return null;
-        }
-        if (!this.getAgentFormationData(agent)!.isInFormation) {
-            return null;
-        }
-        if (!agent.isPathing()) {
-            return 0;
-        }
-        // Get the distance for the agents current path
-        // TODO: If a detour is faster than mainTrack, make the detouring agent slower instead
-        let pathDist = agent.pathDistRemaining();
-        // Get the distance between the waypoints, as measured along the mainTrack
-        let waypointDist = 0;
-        for(let i = this.mainTrack.length-agent.waypoints.length; i < this.mainTrack.length-1; i++) {
-            waypointDist += getPointDist(this.mainTrack[i].p, this.mainTrack[i+1].p);
-        }
-        return pathDist + waypointDist;
     }
     getIdealSpeeds(deltaTime: number) {
         const MAX_SPEEDUP = 0.25; // Max speed-up of 25%
         if (this.mainTrack == null) {
             throw "Invalid Call!";
         }
+        let mainTrackPts = this.mainTrack.map(ipt => ipt.p);
 
         // Get distance remaining for each Agent, along with the minimum distance remaining
-        let distanceRemainings = Array(this.agents.length);
+        let distanceRemainings = Array(this.formationAgents.length);
         let minDistanceRemaining: number | null = null;
-        for(let i = 0; i < this.agents.length; i++) {
-            let agent = this.agents[i];
-            let distanceRemaining = this.getDistanceRemaining(agent);
-            if (distanceRemaining == null) {
+        for(let i = 0; i < this.formationAgents.length; i++) {
+            let formationAgent = this.formationAgents[i];
+            if (!formationAgent.isInFormation) {
                 continue;
             }
-            distanceRemainings[i] = distanceRemaining;
+            let distanceRemaining = this.formationAgents[i].getDistRemaining(mainTrackPts);
+            let numAgentsAhead = formationAgent.trackManager!.getNumAgentsAhead(formationAgent);
+            distanceRemainings[i] = Math.max(distanceRemaining - numAgentsAhead*this.rankPitch, 0);
             minDistanceRemaining = minDistanceRemaining == null ? distanceRemaining : Math.min(minDistanceRemaining, distanceRemaining);
         }
 
         // Generate the ideal speeds for each Agent
-        let idealSpeeds = Array(this.agents.length);
+        let idealSpeeds = Array(this.formationAgents.length);
         // Ideal speed is based on each agent's comparison to the agent that's furthest along the track
-        for(let i = 0; i < this.agents.length; i++) {
-            let agent = this.agents[i];
-            if (!this.getAgentFormationData(agent)!.isInFormation) {
+        for(let i = 0; i < this.formationAgents.length; i++) {
+            let formationAgent = this.formationAgents[i];
+            if (!formationAgent.isInFormation) {
                 idealSpeeds[i] = this.speed;
                 continue;
             }
@@ -380,7 +585,7 @@ export class Formation {
                 // And speed up by the necessary amount to catchup this frame.
                 let neededSpeedup = deltaDist / deltaTime;
                 // Capped at MAX_SPEEDUP or the agent's natural speed
-                let maxSpeed = Math.max(this.speed*(1+MAX_SPEEDUP), agent.speed);
+                let maxSpeed = Math.max(this.speed*(1+MAX_SPEEDUP), formationAgent.agent.speed);
 
                 idealSpeeds[i] = Math.min(maxSpeed, this.speed + neededSpeedup);
             } else {
@@ -392,34 +597,94 @@ export class Formation {
         // Return the ideal speeds
         return idealSpeeds;
     }
-    async iterate(deltaTime: number) {
+    async considerNeighboringAgents(otherAgents: Agent[], deltaTime: number) {
         // If the Formation is following a main track, iterate it
         if (this.mainTrack != null) {
             // Get Ideal Speed for all Agents
             let agentSpeeds = this.getIdealSpeeds(deltaTime);
 
-            // Have all agents consider collision avoidance
-            for(let i = 0; i < this.agents.length; i++) {
-                let neighboringAgents = this.agents.slice();
-                neighboringAgents.splice(i, 1);
-                await this.agents[i].considerNeighboringAgents(this.boundingFace, this.obstacleFaces, this.offsetTraversableFaces, neighboringAgents, deltaTime, agentSpeeds[i]);
+            // Iterate targets
+            for(let i = 0; i < this.formationAgents.length; i++) {
+                let formationAgent = this.formationAgents[i];
+                if (!formationAgent.isInFormation) {
+                    continue;
+                }
+                // Keep iterating the target while we still can
+                for (let i = 0; i < 10; i++) {
+                    // If we can iterate the next target, do so in advance
+                    if (formationAgent.canIterateNextTarget()) {
+                        let trackManager = formationAgent.trackManager!;
+                        let [start, end] = trackManager.getNextSecondary()!;
+                        let path = await polyanya(this.offsetTraversableFaces, start, end);
+                        if (path == null) {
+                            console.error('Track Broken!', start, end);
+                            throw 'Track Broken!';
+                        } else {
+                            trackManager.setNextSecondary(path.path);
+                        }
+                    }
+                    // Get the target and next target
+                    let [curTarget, nextPoint] = formationAgent.getTarget();
+                    // If we should iterate if we're within radius of the current target,
+                    let tryIterate = false;
+                    if (getPointDist(formationAgent.agent.position, curTarget) < formationAgent.agent.radius) {
+                        tryIterate = true;
+                    } else if (nextPoint != null) {
+                        // Or we're going towards the target in the wrong direction
+                        let dir = nextPoint.minus(curTarget);
+                        if (curTarget.minus(formationAgent.agent.position).dot(dir) < 0) {
+                            tryIterate = true;
+                        }
+                    }
+                    // Check otherAgents if they block the waypoint, and we're as close as we can get
+                    if (!tryIterate) {
+                        for(let otherAgent of otherAgents) {
+                            if (getPointDist(otherAgent.position, curTarget) < otherAgent.radius &&
+                            getPointDist(formationAgent.agent.position, curTarget) < 1.1*otherAgent.radius + formationAgent.agent.radius) {
+                                tryIterate = true;
+                            }
+                        }
+                    }
+                    // Try to iterate the target, engaging in iteration logic if succeeded
+                    if (tryIterate && formationAgent.tryIterateTarget()) {
+                        let [newTarget, _] = formationAgent.getTarget();
+                        let success = await formationAgent.agent.setWaypoints(this.offsetTraversableFaces, [newTarget], 20*this.rankPitch);
+                        if (!success) {
+                            console.error('Could not set Waypoints!', formationAgent.agent.position.copy(), newTarget);
+                            formationAgent.isInFormation = false;
+                            break;
+                        }
+                    }
+                }
             }
+            
 
+            // Have all agents consider collision avoidance
+            for(let i = 0; i < this.formationAgents.length; i++) {
+                let neighboringAgents = this.formationAgents.map(formationAgent => formationAgent.agent);
+                neighboringAgents.splice(i, 1);
+                neighboringAgents = neighboringAgents.concat(otherAgents);
+                await this.formationAgents[i].agent.considerNeighboringAgents(this.boundingFace, this.obstacleFaces, this.offsetTraversableFaces, neighboringAgents, deltaTime, agentSpeeds[i]);
+            }
+        }
+    }
+    async iterate(deltaTime: number) {
+        if (this.mainTrack != null) {
             // Iterate all Agents, with reciprocal collision avoidance
-            let remainingTimes = Array(this.agents.length);
-            for(let i = 0; i < this.agents.length; i++) {
-                let agent = this.agents[i];
-                if (!this.getAgentFormationData(agent)!.isInFormation) {
+            let remainingTimes = Array(this.formationAgents.length);
+            for(let i = 0; i < this.formationAgents.length; i++) {
+                let formationAgent = this.formationAgents[i];
+                if (!formationAgent.isInFormation) {
                     continue;
                 }
                 // Iterate this agent
-                remainingTimes[i] = agent.iterate(deltaTime);
+                remainingTimes[i] = formationAgent.agent.iterate(deltaTime);
             }
             // Iterate again, with any remaining time, using strict collision avoidance
             // TODO: Implement an ORCA run assuming other agents won't move
-            /*for(let i = 0; i < this.agents.length; i++) {
-                let agent = this.agents[i];
-                if (!this.getAgentFormationData(agent)!.isInFormation) {
+            /*for(let i = 0; i < this.formationAgents.length; i++) {
+                let formationAgent = this.formationAgents[i];
+                if (!agent.isInFormation) {
                     continue;
                 }
                 // Iterate again with any remaining time
@@ -431,14 +696,15 @@ export class Formation {
             // Get the status of agents at end-of-frame
             let bestDistanceRemaining: number | null = null;
             let numAgentsPathing = 0;
-            for(let i = 0; i < this.agents.length; i++) {
-                let agent = this.agents[i];
-                let distanceRemaining = this.getDistanceRemaining(agent);
-                if (distanceRemaining == null) {
+            let mainTrackPts = this.mainTrack.map(ipt => ipt.p);
+            for(let i = 0; i < this.formationAgents.length; i++) {
+                let formationAgent = this.formationAgents[i];
+                if (!formationAgent.isInFormation) {
                     continue;
                 }
+                let distanceRemaining = formationAgent.getDistRemaining(mainTrackPts);
                 // Keep track of the most progress,
-                if (agent.isPathing()) {
+                if (formationAgent.isPathing()) {
                     numAgentsPathing++;
                 }
                 if (bestDistanceRemaining == null || distanceRemaining < bestDistanceRemaining) {

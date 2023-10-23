@@ -2,6 +2,7 @@ import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, dra
 import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace, faceFromPolyline, offsetFace } from "./math";
 import { loadMesh, loadMaze, loadPolyData, traverableFacesFromObstacles } from "./utils";
 import { Agent, Formation } from "./agent";
+//import "source-map-support/register";
 
 async function main() {
     const AGENT_RADIUS = 0.3;
@@ -13,19 +14,33 @@ async function main() {
     //const faces = loadPolyData(mazePolyData);
 
     // Obstacles as raw polylines
-    const rawObstacles = [
-        [[10, -10], [10, -20], [20, -20], [20, -10]],
-        [[30, -30], [30, -40], [60, -40], [60, -30]],
-        [[21, -10], [30, -20], [60, -15], [40, -5]],
-        // [[23, -10], [40, -5], [60, -15], [18, -20]],
-        // [[23, -10], [40, -5], [60, -15], [5, -10]],
+    function createSquareRawObstacle(pt: Point, dist: number) {
+        return [
+            [pt.x, pt.y - dist],
+            [pt.x + dist, pt.y],
+            [pt.x, pt.y + dist],
+            [pt.x - dist, pt.y],
+        ];
+    }
+    let loc = 25;
+    let houseRadius = 2;
+    let barracksRadius = 5;
+    const rawObstacles: number[][][] = [
+        //[[10, -10], [10, -20], [20, -20], [20, -10]],
+        //[[30, -30], [30, -40], [60, -40], [60, -30]],
+        //[[21, -10], [30, -20], [60, -15], [40, -5]],
+        createSquareRawObstacle(new Point(loc+0.5/5*barracksRadius, -loc+0.5/5*barracksRadius), barracksRadius),
+        createSquareRawObstacle(new Point(loc+4/5*barracksRadius, -loc+8/5*barracksRadius), barracksRadius),
+        createSquareRawObstacle(new Point(loc+(4+3.1)/5*barracksRadius, -loc+(8+7)/5*barracksRadius), barracksRadius),
+        createSquareRawObstacle(new Point(loc-3/5*barracksRadius, -loc+(15)/5*barracksRadius), houseRadius),
+        createSquareRawObstacle(new Point(loc-9/5*barracksRadius, -loc+(19)/5*barracksRadius), houseRadius),
     ];
     // Convert into obstacle faces
 
     let minX = 0;
     let maxY = 0;
-    let maxX = Math.max(...rawObstacles.map(rawPolyline => rawPolyline.map(pt => pt[0])).map(arr => Math.max(...arr))) + 5;
-    let minY = Math.min(...rawObstacles.map(rawPolyline => rawPolyline.map(pt => pt[1])).map(arr => Math.min(...arr))) - 5;
+    let maxX = 45;
+    let minY = -45;
     let boundingFace = faceFromPolyline([[minX, maxY], [minX, minY], [maxX, minY], [maxX, maxY]].map(pt => new Point(pt[0], pt[1])));
     let obstacleFaces = rawObstacles.map(polyline => faceFromPolyline(polyline.map(pt => new Point(pt[0], pt[1]))));
 
@@ -59,15 +74,30 @@ async function main() {
     // Constants
     let agentSpeed = 2;
     let agents = [
-        new Agent(new Point(5.5, -1.5), AGENT_RADIUS, agentSpeed),
         new Agent(new Point(8.5, -1.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(9.5, -1.5), AGENT_RADIUS, agentSpeed),
         new Agent(new Point(10.5, -1.5), AGENT_RADIUS, agentSpeed),
         new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed),
         new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed),
     ];
+    if (true) {
+        agents.push(...[
+            new Agent(new Point(8.5, -2.5), AGENT_RADIUS, agentSpeed),
+            new Agent(new Point(9.5, -2.5), AGENT_RADIUS, agentSpeed),
+            new Agent(new Point(10.5, -2.5), AGENT_RADIUS, agentSpeed),
+            new Agent(new Point(11.5, -2.5), AGENT_RADIUS, agentSpeed),
+            //new Agent(new Point(12.5, -2.5), AGENT_RADIUS, agentSpeed),
+        ]);
+    }
     let formation = new Formation(boundingFace, obstacleFaces, offsetTraversableFaces);
     formation.addAgents(agents);
-    agents = [];
+    agents = [
+        new Agent(new Point(10.5, -10.5), AGENT_RADIUS, agentSpeed),
+        new Agent(new Point(11.5, -15.5), AGENT_RADIUS, agentSpeed),
+    ];
+    for(let agent of agents) {
+        await agent.setWaypoints(offsetTraversableFaces, [agent.position]);
+    }
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
     let keysPressed: string[] = []; // Stores the keys pressed
     function isKeyPressed(key: string) {
@@ -144,19 +174,19 @@ async function main() {
 
         // Update path code
         if (lastClick != null) {
-            for(let agent of agents) {
-                await agent.setWaypoints(offsetTraversableFaces, [lastClick]);
-            }
             await formation.pathfind(lastClick);
         }
         // Iterate all agents
         let deltaTime = 1/60;
+        let allAgentsInFormation = formation.formationAgents.map(formationAgent => formationAgent.agent);
         for(let i = 0; i < agents.length; i++) {
             let agent = agents[i];
             let otherAgents = agents.slice();
             otherAgents.splice(i, 1);
+            otherAgents = otherAgents.concat(allAgentsInFormation);
             await agent.considerNeighboringAgents(boundingFace, obstacleFaces, offsetTraversableFaces, otherAgents, deltaTime);
         }
+        await formation.considerNeighboringAgents(agents, deltaTime);
         for(let agent of agents) {
             agent.iterate(deltaTime);
         }
@@ -166,10 +196,17 @@ async function main() {
         const DRAW_AGENT_PATHING = false;
         const DRAW_DEBUG_TRACKS = false;
         const DRAW_RUNNING_COLOR = false;
-        for(let i = 0; i < formation.agents.length; i++) {
-            let agent = formation.agents[i];
+        for(let agent of agents) {
+            drawPoint(agent.position, 'red', agent.radius);
+            if (DRAW_AGENT_PATHING && agent.path.length > 0) {
+                drawPath([agent.position, ...agent.path], 'purple');
+            }
+        }
+        for(let i = 0; i < formation.formationAgents.length; i++) {
+            let formationAgent = formation.formationAgents[i];
+            let agent = formationAgent.agent;
             let isRunning = false;
-            if (formation.getAgentFormationData(agent)!.isInFormation && agent.prevVel !== undefined) {
+            if (formationAgent.isInFormation && agent.prevVel !== undefined) {
                 isRunning = agent.prevVel.magnitude() > formation.speed + EPSILON;
             }
             drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green', agent.radius);
@@ -183,13 +220,19 @@ async function main() {
             // For each point along the main track,
             for(let i = 0; i < mainTrack.length; i++) {
                 // Track the agent's track points for that i
-                for(let j = 0; j < formation.agents.length; j++) {
-                    let agent = formation.agents[j];
-                    let agentFormationData = formation.getAgentFormationData(agent)!;
-                    if (agentFormationData.isInFormation) {
-                        let pt = agentFormationData.track[i];
-                        if (pt != null) {
-                            drawPoint(pt, 'green', 0.1, true);
+                for(let j = 0; j < formation.formationAgents.length; j++) {
+                    let formationAgent = formation.formationAgents[j];
+                    if (formationAgent.isInFormation) {
+                        let secondaryPts = formationAgent.trackManager!.secondaryPts[i];
+                        if (secondaryPts != null) {
+                            for(let pt of secondaryPts) {
+                                drawPoint(pt, 'green', 0.1, true);
+                            }
+                        } else {
+                            let pt = formationAgent.trackManager!.pts[i];
+                            if (pt != null) {
+                                drawPoint(pt, 'green', 0.1, true);
+                            }
                         }
                     }
                 }
