@@ -493,19 +493,11 @@ export class Formation {
                             let result = this.trackManagers[i].setNextSecondary(path.path);
                             startPoints.push([i, result]);
                         } else {
-                            console.error('Invalid!');
+                            // TODO: Find closest acceptable point, or keep getting the next secondary
+                            console.error('Invalid Starting Point!');
                         }
                     }
                 }
-            }
-            // TODO: Allow startPoints != this.formationAgents.length
-            if (startPoints.length > this.formationAgents.length) {
-                startPoints.splice(this.formationAgents.length, startPoints.length-this.formationAgents.length);
-            }
-            if (startPoints.length < this.formationAgents.length) {
-                this.stop();
-                console.error('Not enough Start Points for Hungarian Matching!');
-                return;
             }
 
             // Generate a cost matrix between each track and each agent
@@ -526,20 +518,26 @@ export class Formation {
             // Permute the tracks so that they match with the best agent
             // This gets the permutation with the minimal Sum(Cost) from costMatrix
             let startPointPermutation = hungarian(costMatrix);
-            startPoints = startPoints.map((_, i) => startPoints[startPointPermutation[i]]);
+            let permutedStartPoints = startPointPermutation.map(i => i == null ? null : startPoints[i]);
 
             // Initialize all of the agents along their track
             const MAX_START_FORMATION_DIST = this.speed*5;
             for(let i = 0; i < this.formationAgents.length; i++) {
                 let formationAgent = this.formationAgents[i];
-                let [file, rankIdx] = startPoints[i];
+                let startPoint = permutedStartPoints[i];
+                if (startPoint == null) {
+                    console.error('Could not hungarian into formation!', formationAgent, formationAgent.agent.position.copy());
+                    formationAgent.isInFormation = false;
+                    continue;
+                }
+                let [file, rankIdx] = startPoint;
                 let pt = this.trackManagers[file].secondaryPts[rankIdx]![0];
                 let success = await formationAgent.agent.setWaypoints(this.offsetTraversableFaces, [pt], MAX_START_FORMATION_DIST);
                 if (success) {
                     this.trackManagers[file].setFormationAgent(formationAgent, rankIdx, 0);
                     formationAgent.isInFormation = true;
                 } else {
-                    console.error('Could not join formation!', formationAgent, formationAgent.agent.position.copy(), pt);
+                    console.error('Could not pathfind to formation!', formationAgent, formationAgent.agent.position.copy(), pt);
                     formationAgent.isInFormation = false;
                 }
             }
