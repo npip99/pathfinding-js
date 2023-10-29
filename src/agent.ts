@@ -1,6 +1,7 @@
 import { Point, Face, EPSILON, getPointDist, lerp } from "./math";
 import { polyanya } from "./polyanya";
 import { hungarian } from "./hungarian";
+import { minCostFlow, Edge } from "min-cost-flow";
 import { ORCAAgent, getORCAVelocity } from "./orca";
 
 const USING_ORCA = true;
@@ -17,9 +18,9 @@ export class Agent {
     // Current velocity and speed
     curVel = new Point(0, 0);
     curSpeed = 0;
-    // Waypoints are points along the macro-scale path
-    waypoints: (Point | null)[] = [];
-    // Path is the current path to waypoints[0]
+    // The local finalTarget that the Agent is trying to get to
+    finalTarget: Point | null;
+    // path is the current path to finalTarget
     path: Point[] = [];
     // curTarget is path[0]
     curTarget: Point | null = null;
@@ -42,63 +43,37 @@ export class Agent {
         }
         return totalPathLength;
     }
-    // Set current waypoints, returning true on success
-    async setWaypoints(offsetTraversableFaces: Face[], waypoints: (Point | null)[], maxStartDist?: number) {
+    // Sets current finalTarget, returning true on success
+    async setFinalTarget(offsetTraversableFaces: Face[], finalTarget: Point, maxStartDist?: number) {
         this.stop();
-        this.waypoints = waypoints;
+        this.finalTarget = finalTarget;
         // Update the current target
-        await this.updateTarget(offsetTraversableFaces, maxStartDist, true);
+        await this.updateTarget(offsetTraversableFaces, maxStartDist);
         return this.curTarget != null;
     }
     stop() {
-        this.waypoints = [];
+        this.finalTarget = null;
         this.path = [];
         this.curTarget = null;
+    }
+    hasAnotherTarget() {
+        return this.path.length > 1;
     }
     isPathing() {
         return this.hasAnotherTarget() || (this.curTarget != null && this.position.minus(this.curTarget).magnitude() > EPSILON);
     }
-    hasAnotherTarget() {
-        return this.path.length > 1 || this.waypoints.length > 1;
-    }
     // Set Agent's target for this iteration
-    async updateTarget(offsetTraversableFaces: Face[], maxPathDist?: number, initializing: boolean = false) {
-        // If we're done with our target,
-        if (this.curTarget == null) {
-            if (!initializing) {
-                // Drop path[0]
-                this.path.splice(0, 1);
+    async updateTarget(offsetTraversableFaces: Face[], maxPathDist?: number) {
+        // Repath to target every time
+        if (this.finalTarget != null) {
+            let result = await polyanya(offsetTraversableFaces, this.position, this.finalTarget, maxPathDist);
+            if (result == null) {
+                this.stop();
+                return;
             }
-            // If we're done with our path, get a new path or exit if done
-            if (this.path.length == 0) {
-                if (!initializing) {
-                    // Drop waypoints[0]
-                    this.waypoints.splice(0, 1);
-                }
-                // Skip over null waypoints
-                while(this.waypoints.length > 0 && this.waypoints[0] == null) {
-                    this.waypoints.splice(0, 1);
-                }
-                // If there are no more waypoints, we're done
-                if (this.waypoints.length == 0) {
-                    this.stop();
-                    return;
-                }
-                let result = await polyanya(offsetTraversableFaces, this.position, this.waypoints[0]!, maxPathDist);
-                if (result == null) {
-                    this.stop();
-                    return;
-                }
-                this.path = result.path;
-                this.path.splice(0, 1); // Ignore src in Path
-            }
-            // Use the next path
+            this.path = result.path;
+            this.path.splice(0, 1); // Ignore src in Path
             this.curTarget = this.path[0];
-        }
-        // If we've already reached the target, and there's more, pop it and update target
-        if (this.hasAnotherTarget() && this.position.minus(this.curTarget).magnitude() < this.radius*(1-1/Math.sqrt(2))) {
-            this.curTarget = null;
-            await this.updateTarget(offsetTraversableFaces);
         }
     }
     // Takes all neighboring Agents and Obstacles into consideration during the calculation of current velocity
@@ -207,7 +182,7 @@ class FormationAgent {
         // Get the distance for the agents current path
         // TODO: If a detour is faster than mainTrack, make the detouring agent slower instead
         let pathDist = this.agent.pathDistRemaining();
-        // Get the distance between the waypoints, as measured along the mainTrack
+        // Get the distance along the track points, but measured using the mainTrack
         let secondaryPts = this.trackManager.secondaryPts[this.trackPtIdx]!;
         for(let i = this.secondaryTrackPtIdx; i < secondaryPts.length-1; i++) {
             pathDist += getPointDist(secondaryPts[i], secondaryPts[i+1]);
@@ -217,26 +192,20 @@ class FormationAgent {
         }
         return pathDist;
     }
+    // Whether or not the agent can make progress
     isPathing(): boolean {
-        return true;
-    }
-    // True if the next target can be iterated
-    canIterateNextTarget(): boolean {
         if (this.trackManager == null) throw "Invalid";
-        if (this.trackManager.isFinished(this)) {
-            return false;
-        } else {
-            return this.trackManager.getNextIndices(this) == null;
-        }
+        return this.agent.isPathing() || this.trackManager.iterateFormationAgent(this, true);
+    }
+    // True if the secondary after the current target can be iterated
+    canIterateNextSecondary(): boolean {
+        if (this.trackManager == null) throw "Invalid";
+        return !this.trackManager.isFinished(this) && this.trackManager.getNextIndices(this) == null;
     }
     // Try to iterate the target to the next target, returning true if iteration was successful
     tryIterateTarget(): boolean {
         if (this.trackManager == null) throw "Invalid";
-        if (this.trackManager.isFinished(this)) {
-            return false;
-        } else {
-            return this.trackManager!.iterateFormationAgent(this);
-        }
+        return this.trackManager!.iterateFormationAgent(this);
     }
     // Get the current target and the next target
     getTarget(): [Point, Point | null] {
@@ -265,6 +234,56 @@ class TrackManager {
         this.occupants = pts.map(() => []);
         this.iPointDist = iPointDist;
     }
+    // Get all TrackPoints
+    getAllTrackPoints(): Point[] {
+        let filteredSecondaryPts = this.secondaryPts.filter(arr => arr != null) as Point[][];
+        let allPoints = filteredSecondaryPts.flat();
+        return allPoints;
+    }
+    // Clear all occupants
+    clearOccupants() {
+        for(let secondaryOccupants of this.occupants) {
+            for(let i = 0; i < secondaryOccupants.length; i++) {
+                let occupant = secondaryOccupants[i];
+                if (occupant != null) {
+                    occupant.trackManager = null;
+                    occupant.trackPtIdx = 0;
+                    occupant.secondaryTrackPtIdx = 0;
+                    secondaryOccupants[i] = null;
+                }
+            }
+        }
+    }
+    // Set occupant
+    setOccupant(formationAgent: FormationAgent, pt: Point) {
+        for(let i = 0; i < this.secondaryPts.length; i++) {
+            let secondaryPtList = this.secondaryPts[i];
+            if (secondaryPtList == null) {
+                continue;
+            }
+            for(let j = 0; j < secondaryPtList.length; j++) {
+                if (secondaryPtList[j] == pt) {
+                    formationAgent.trackManager = this;
+                    formationAgent.trackPtIdx = i;
+                    formationAgent.secondaryTrackPtIdx = j;
+                    this.occupants[i][j] = formationAgent;
+                }
+            }
+        }
+    }
+    // Gets occupants, in the order that they occur in formation
+    getOccupants(): FormationAgent[] {
+        let curOccupants: FormationAgent[] = [];
+        for(let secondaryOccupants of this.occupants) {
+            for(let i = 0; i < secondaryOccupants.length; i++) {
+                let occupant = secondaryOccupants[i];
+                if (occupant != null) {
+                    curOccupants.push(occupant);
+                }
+            }
+        }
+        return curOccupants;
+    }
     // Get num agents ahead
     getNumAgentsAhead(formationAgent: FormationAgent) {
         let trackPtIdx = formationAgent.trackPtIdx;
@@ -285,7 +304,8 @@ class TrackManager {
         }
         return numAgentsAhead;
     }
-    // Get next indices. Returns null if finished or needs initialization
+    // Get next indices. Returns null if finished or needs initialization.
+    // Assumes nextSecondary is initialized, null implies the agent can't continue.
     getNextIndices(formationAgent: FormationAgent): [number, number] | null {
         let trackPtIdx = formationAgent.trackPtIdx;
         let secondaryTrackPtIdx = formationAgent.secondaryTrackPtIdx;
@@ -342,10 +362,12 @@ class TrackManager {
         formationAgent.trackPtIdx = ptIdx;
         formationAgent.secondaryTrackPtIdx = secondaryPtIdx;
     }
-    // Get formation agent target
-    // Returns false if secondary must be iterated
-    iterateFormationAgent(formationAgent: FormationAgent): boolean {
-        if (this.isFinished(formationAgent)) throw 'Invalid';
+    // Iterates the formationAgent.
+    // Returns true if successful. dryRun returns the boolean, but doesn't iterate.
+    iterateFormationAgent(formationAgent: FormationAgent, dryRun: boolean = false): boolean {
+        if (this.isFinished(formationAgent)) {
+            return false;
+        }
         let newIndices = this.getNextIndices(formationAgent);
         if (newIndices == null) {
             return false;
@@ -353,12 +375,16 @@ class TrackManager {
         let [trackPtIdx, secondaryTrackPtIdx] = newIndices;
         // Iterate onto the next point, only if it's not occupied
         if (this.occupants[trackPtIdx][secondaryTrackPtIdx] == null) {
-            this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = null;
-            formationAgent.trackPtIdx = trackPtIdx;
-            formationAgent.secondaryTrackPtIdx = secondaryTrackPtIdx;
-            this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = formationAgent;
+            if (!dryRun) {
+                this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = null;
+                formationAgent.trackPtIdx = trackPtIdx;
+                formationAgent.secondaryTrackPtIdx = secondaryTrackPtIdx;
+                this.occupants[formationAgent.trackPtIdx][formationAgent.secondaryTrackPtIdx] = formationAgent;
+            }
+            return true;
+        } else {
+            return false;
         }
-        return true;
 
     }
     // Checks if the index pair is the last one
@@ -532,7 +558,7 @@ export class Formation {
                 }
                 let [file, rankIdx] = startPoint;
                 let pt = this.trackManagers[file].secondaryPts[rankIdx]![0];
-                let success = await formationAgent.agent.setWaypoints(this.offsetTraversableFaces, [pt], MAX_START_FORMATION_DIST);
+                let success = await formationAgent.agent.setFinalTarget(this.offsetTraversableFaces, pt, MAX_START_FORMATION_DIST);
                 if (success) {
                     this.trackManagers[file].setFormationAgent(formationAgent, rankIdx, 0);
                     formationAgent.isInFormation = true;
@@ -595,22 +621,139 @@ export class Formation {
         // Return the ideal speeds
         return idealSpeeds;
     }
+    async reassignTrackPoints() {
+        if (this.mainTrack == null || this.trackManagers == null) {
+            throw "Invalid Call!";
+        }
+        // TODO: Use actual pathfinding distance, instead of Euclidean distance
+        // TrackPoint (TP) Groups
+        let trackPointGroups = this.trackManagers.map(trackManager => trackManager.getAllTrackPoints());
+        let formationAgentsInPosition = this.formationAgents.filter(formationAgent => formationAgent.isInFormation);
+        let agentsPerTPGroup = Math.ceil(formationAgentsInPosition.length / trackPointGroups.length);
+
+        // MCMF Lambdas
+        function getAgentNode(i: number) {
+            return 'Agent' + i;
+        }
+        function getTrackNode(trackIdx: number, rankIdx: number | null = null) {
+            return 'Track' + trackIdx + (rankIdx == null ? '' : ('Rank' + rankIdx));
+        }
+        function createWeight(cost: number) {
+            return Math.max(0, Math.round(1000 * cost));
+        }
+
+        // MCMF Construction
+        let edges: Edge<string>[] = [];
+        // SOURCE -> Agents
+        for (let i = 0; i < formationAgentsInPosition.length; i++) {
+            edges.push({
+                from: 'SOURCE',
+                to: getAgentNode(i),
+                cost: 0,
+                capacity: 1,
+                //flow: 1,
+            });
+        }
+        // Agents -> TrackPoints
+        const MAX_DIST = this.speed*3;
+        for (let i = 0; i < formationAgentsInPosition.length; i++) {
+            let allEdges = [];
+            for (let trackIdx = 0; trackIdx < trackPointGroups.length; trackIdx++) {
+                for (let rankIdx = 0; rankIdx < trackPointGroups[trackIdx].length; rankIdx++) {
+                    let trackPt = trackPointGroups[trackIdx][rankIdx];
+                    let agentPt = formationAgentsInPosition[i].agent.position;
+                    let dist = getPointDist(agentPt, trackPt);
+                    if (dist > MAX_DIST) {
+                        continue;
+                    }
+                    allEdges.push({
+                        from: getAgentNode(i),
+                        to: getTrackNode(trackIdx, rankIdx),
+                        cost: createWeight(dist*dist),
+                        capacity: 1,
+                    });
+                }
+            }
+            allEdges.sort((a, b) => a.cost - b.cost);
+            // Get the closest N options
+            // allEdges = allEdges.slice(5);
+            edges.push(...allEdges);
+        }
+        // TrackPoints -> TrackGroups
+        for (let trackIdx = 0; trackIdx < trackPointGroups.length; trackIdx++) {
+            for (let rankIdx = 0; rankIdx < trackPointGroups[trackIdx].length; rankIdx++) {
+                edges.push({
+                    from: getTrackNode(trackIdx, rankIdx),
+                    to: getTrackNode(trackIdx),
+                    cost: 0,
+                    capacity: 1,
+                });
+            }
+        }
+        // TrackGroups -> SINK
+        for (let trackIdx = 0; trackIdx < trackPointGroups.length; trackIdx++) {
+            edges.push({
+                from: getTrackNode(trackIdx),
+                to: 'SINK',
+                cost: 0,
+                capacity: agentsPerTPGroup,
+                //flow: agents.length/3,
+            });
+        }
+
+        // Solve MCMF
+        let startMCMF = performance.now();
+        let ansEdges = minCostFlow(edges);
+        let endMCMF = performance.now();
+        if (endMCMF - startMCMF > 1000/60*0.8) {
+            console.warn('MCMF too long!', endMCMF - startMCMF, 'ms');
+        }
+
+        // Extract the matching
+        let matchings: ([number, number] | null)[] = Array(formationAgentsInPosition.length).fill(null);
+        for(let edge of ansEdges) {
+            if (edge.flow == 1 && edge.from.startsWith('Agent') && edge.to.includes('Rank')) {
+                let agentIdx = parseInt(edge.from.split('Agent')[1]);
+                let [trackIdx, rankIdx] = edge.to.split('Track')[1].split('Rank').map(v => parseInt(v));
+                matchings[agentIdx] = [trackIdx, rankIdx];
+            }
+        }
+
+        // Clear the current matching
+        for (let trackManager of this.trackManagers) {
+            trackManager.clearOccupants();
+        }
+        // Assign the matching
+        for (let i = 0; i < formationAgentsInPosition.length; i++) {
+            let formationAgent = formationAgentsInPosition[i];
+            let matching = matchings[i];
+            if (matching == null) {
+                console.error('Could not match Agent into formation!', formationAgent, formationAgent.agent.position.copy());
+                formationAgent.agent.stop();
+                formationAgent.isInFormation = false;
+                continue;
+            }
+            let [trackIdx, rankIdx] = matching;
+            let matchPt = trackPointGroups[trackIdx][rankIdx];
+            this.trackManagers[trackIdx].setOccupant(formationAgent, matchPt);
+        }
+    }
     async considerNeighboringAgents(otherAgents: Agent[], deltaTime: number) {
         // If the Formation is following a main track, iterate it
-        if (this.mainTrack != null) {
-            // Get Ideal Speed for all Agents
-            let agentSpeeds = this.getIdealSpeeds(deltaTime);
+        if (this.mainTrack != null && this.trackManagers != null) {
+            // Reassign track points for optimal matching
+            await this.reassignTrackPoints();
 
             // Iterate targets
-            for(let i = 0; i < this.formationAgents.length; i++) {
-                let formationAgent = this.formationAgents[i];
+            let orderedFormationAgents = this.trackManagers.map(trackManager => trackManager.getOccupants().reverse()).flat();
+            for(let formationAgent of orderedFormationAgents) {
                 if (!formationAgent.isInFormation) {
                     continue;
                 }
                 // Keep iterating the target while we still can
-                for (let i = 0; i < 10; i++) {
+                for (let iter = 0; iter < 10; iter++) {
                     // If we can iterate the next target, do so in advance
-                    if (formationAgent.canIterateNextTarget()) {
+                    if (formationAgent.canIterateNextSecondary()) {
                         let trackManager = formationAgent.trackManager!;
                         let [start, end] = trackManager.getNextSecondary()!;
                         let path = await polyanya(this.offsetTraversableFaces, start, end);
@@ -637,25 +780,32 @@ export class Formation {
                     // Check otherAgents if they block the waypoint, and we're as close as we can get
                     if (!tryIterate) {
                         for(let otherAgent of otherAgents) {
-                            if (getPointDist(otherAgent.position, curTarget) < otherAgent.radius &&
-                            getPointDist(formationAgent.agent.position, curTarget) < 1.1*otherAgent.radius + formationAgent.agent.radius) {
+                            if (
+                                getPointDist(otherAgent.position, curTarget) < otherAgent.radius &&
+                                getPointDist(formationAgent.agent.position, curTarget) < 1.25*otherAgent.radius + formationAgent.agent.radius
+                            ) {
                                 tryIterate = true;
                             }
                         }
                     }
                     // Try to iterate the target, engaging in iteration logic if succeeded
-                    if (tryIterate && formationAgent.tryIterateTarget()) {
-                        let [newTarget, _] = formationAgent.getTarget();
-                        let success = await formationAgent.agent.setWaypoints(this.offsetTraversableFaces, [newTarget], 20*this.rankPitch);
-                        if (!success) {
-                            console.error('Could not set Waypoints!', formationAgent.agent.position.copy(), newTarget);
-                            formationAgent.isInFormation = false;
-                            break;
-                        }
+                    // If the agent could not be iterated, exit the loop
+                    if (!(tryIterate && formationAgent.tryIterateTarget())) {
+                        break;
                     }
                 }
+                // Try to pathfind to the chosen target
+                // Pathfind to the new target
+                let [curTarget, _] = formationAgent.getTarget();
+                let success = await formationAgent.agent.setFinalTarget(this.offsetTraversableFaces, curTarget, 20*this.rankPitch);
+                if (!success) {
+                    console.error('Could not set Target!', formationAgent.agent.position.copy(), curTarget);
+                    formationAgent.isInFormation = false;
+                }
             }
-            
+
+            // Get Ideal Speed for all Agents
+            let agentSpeeds = this.getIdealSpeeds(deltaTime);
 
             // Have all agents consider collision avoidance
             for(let i = 0; i < this.formationAgents.length; i++) {

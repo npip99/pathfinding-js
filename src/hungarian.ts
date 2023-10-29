@@ -75,6 +75,17 @@ export function hungarian(costMatrix: number[][]): (number | null)[] {
 function testHungarian() {
     let A = [[36.22, -10.15], [36.175, -8.15], [36.19, -9.15], [36.129, -6.15], [36.152, -7.15], [36.10, -7.16]];
     let B = [[36.03, -6.16], [36.10, -7.16], [36.175, -8.158], [36.246, -9.15], [36.317, -10.15]];
+    A = A.concat(A);
+    A = A.concat(A);
+    A = A.concat(A);
+    A = A.concat(A);
+    A = A.concat(A);
+    A = A.concat(A);
+    B = B.concat(B);
+    B = B.concat(B);
+    B = B.concat(B);
+    B = B.concat(B);
+    B = B.concat(B);
     let costMatrix = [];
     for (let i = 0; i < A.length; i++) {
         const row = [];
@@ -85,11 +96,15 @@ function testHungarian() {
         costMatrix.push(row);
     }
     console.log('Cost:', costMatrix);
+    console.log('Dimensions:', A.length, 'x', B.length);
     // Array representing the mapping of source points to destination points
+    let startTime = performance.now();
     let mapping = hungarian(costMatrix);
+    let endTime = performance.now();
     console.log('Hungarian Mapping:', mapping);
+    console.log('Time:', endTime-startTime, 'ms');
     for(let i = 0; i < A.length; i++) {
         let j = mapping[i];
-        console.log(A[i], " => ", j == null ? null : B[j]);
+        //console.log(A[i], " => ", j == null ? null : B[j]);
     }
 }

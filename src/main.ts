@@ -96,15 +96,24 @@ async function main() {
         new Agent(new Point(11.5, -15.5), AGENT_RADIUS, agentSpeed),
     ];
     for(let agent of agents) {
-        await agent.setWaypoints(offsetTraversableFaces, [agent.position]);
+        await agent.setFinalTarget(offsetTraversableFaces, agent.position);
     }
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
-    let keysPressed: string[] = []; // Stores the keys pressed
+    let keysHeld: string[] = []; // Stores the keys pressed
+    let lastKeysHeld: string[] = []; // Stores the keys pressed
+    function isKeyHeld(key: string) {
+        return keysHeld.indexOf(key) > -1;
+    }
     function isKeyPressed(key: string) {
-        return keysPressed.indexOf(key) > -1;
+        return keysHeld.indexOf(key) > -1 && lastKeysHeld.indexOf(key) == -1;
     }
 
     // Main Loop
+    let DRAW_DEBUG_TRACKS = true;
+    let DRAW_AGENT_PATHING = true;
+    let DRAW_RUNNING_COLOR = true;
+    
+    const TARGET_FPS = 60;
     const FRAME_DELAY_RATIO = 1;
     const ISOMETRIC_VIEW = false;
     let frameCount = 0;
@@ -112,6 +121,7 @@ async function main() {
     let translate = [MARGIN*SCALE, MARGIN*SCALE];
     let zoom = 1;
 
+    let fps = 1/TARGET_FPS;
     let render = async function() {
         frameCount++;
         if (frameCount % FRAME_DELAY_RATIO != 0) {
@@ -122,31 +132,43 @@ async function main() {
         // User Input
 
         let scrollSpeed = 5;
-        if (isKeyPressed('ShiftLeft') || isKeyPressed('ShiftRight')) {
+        if (isKeyHeld('ShiftLeft') || isKeyHeld('ShiftRight')) {
             scrollSpeed *= 2;
         }
-        if (isKeyPressed('KeyA')) {
+        if (isKeyHeld('KeyA')) {
             translate[0] += scrollSpeed;
         }
-        if (isKeyPressed('KeyD')) {
+        if (isKeyHeld('KeyD')) {
             translate[0] -= scrollSpeed;
         }
-        if (isKeyPressed('KeyW')) {
+        if (isKeyHeld('KeyW')) {
             translate[1] += scrollSpeed;
         }
-        if (isKeyPressed('KeyS')) {
+        if (isKeyHeld('KeyS')) {
             translate[1] -= scrollSpeed;
         }
-        if (isKeyPressed('KeyN')) {
+        if (isKeyHeld('KeyN')) {
             zoom *= 0.975;
         }
-        if (isKeyPressed('KeyM')) {
+        if (isKeyHeld('KeyM')) {
             zoom /= 0.975;
         }
-        zoom = Math.min(Math.max(zoom, 0.5), 3);
+        zoom = Math.min(Math.max(zoom, 0.5), 6);
         if (isKeyPressed('KeyR')) {
             formation.stop();
         }
+        if (isKeyPressed('KeyV')) {
+            if (DRAW_DEBUG_TRACKS) {
+                DRAW_DEBUG_TRACKS = false;
+                DRAW_AGENT_PATHING = false;
+                DRAW_RUNNING_COLOR = false;
+            } else {
+                DRAW_DEBUG_TRACKS = true;
+                DRAW_AGENT_PATHING = true;
+                DRAW_RUNNING_COLOR = true;
+            }
+        }
+        lastKeysHeld = keysHeld.slice();
 
         // Initial Rendering Setup
 
@@ -170,14 +192,15 @@ async function main() {
             drawFace(face, 'white');
         }
 
-        // Iteration and Rendering
+        // Iteration and Logic
+        let startLogicTimer = performance.now();
 
         // Update path code
         if (lastClick != null) {
             await formation.pathfind(lastClick);
         }
         // Iterate all agents
-        let deltaTime = 1/60;
+        let deltaTime = 1/TARGET_FPS;
         let allAgentsInFormation = formation.formationAgents.map(formationAgent => formationAgent.agent);
         for(let i = 0; i < agents.length; i++) {
             let agent = agents[i];
@@ -192,10 +215,9 @@ async function main() {
         }
         // TODO: Store formation agents in the same datastructure, so that all agents can ORCA
         await formation.iterate(deltaTime);
-        // Render code
-        const DRAW_AGENT_PATHING = false;
-        const DRAW_DEBUG_TRACKS = false;
-        const DRAW_RUNNING_COLOR = false;
+        let endLogicTimer = performance.now();
+
+        // Rendering code
         for(let agent of agents) {
             drawPoint(agent.position, 'red', agent.radius);
             if (DRAW_AGENT_PATHING && agent.path.length > 0) {
@@ -243,6 +265,10 @@ async function main() {
 
         // Queue next Render
         lastClick = null;
+        fps = 0.9*fps + 0.1*Math.min(1000, 1000/(endLogicTimer-startLogicTimer+EPSILON));
+        if (frameCount % TARGET_FPS == 0) {
+            //console.log("FPS:", fps);
+        }
         window.requestAnimationFrame(render);
     }
     window.requestAnimationFrame(render);
@@ -266,16 +292,16 @@ async function main() {
 
     // Keypress Logic
     document.addEventListener('keydown', (event) => {
-        // Add the key to the keysPressed array if it's not already there
-        if (!keysPressed.includes(event.code)) {
-            keysPressed.push(event.code);
+        // Add the key to the keysHeld array if it's not already there
+        if (!keysHeld.includes(event.code)) {
+            keysHeld.push(event.code);
         }
     });
     document.addEventListener('keyup', (event) => {
-        // Remove the key from the keysPressed array
-        const index = keysPressed.indexOf(event.code);
+        // Remove the key from the keysHeld array
+        const index = keysHeld.indexOf(event.code);
         if (index > -1) {
-            keysPressed.splice(index, 1);
+            keysHeld.splice(index, 1);
         }
     });
 }
