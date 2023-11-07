@@ -1,103 +1,74 @@
 import { canvas, ctx, SCALE, setCanvasDimensions, getTransformedCoordinates, drawFace, drawPath, drawPoint } from "./graphics";
-import { Point, EPSILON, mergeAllFaces, markCorners, findBadFace, faceFromPolyline, offsetFace } from "./math";
-import { loadMesh, loadMaze, loadPolyData, traverableFacesFromObstacles } from "./utils";
-import { Agent, Formation } from "./agent";
-//import "source-map-support/register";
+import { EPSILON, Point, Face, faceFromPolyline } from "./math";
+import { Pathfinding } from "./pathfinding";
 
 async function main() {
     const AGENT_RADIUS = 0.3;
     const MARGIN = 1; // Margin between the drawing region and the bounding Face
-    //const faces = loadPolyData(polyData1);
 
-    //const MAZE_URL = 'https://api.allorigins.win/raw?url=https://pastebin.com/raw/GWRCSyUp';
-    //const mazePolyData = loadMaze(await getUrlContents(MAZE_URL));
-    //const faces = loadPolyData(mazePolyData);
+    // Create a pathfinding instance with the given bounds
+    let pathfinding = new Pathfinding(new Point(0, 0), new Point(45, -45));
 
-    // Obstacles as raw polylines
-    function createSquareRawObstacle(pt: Point, dist: number) {
-        return [
+    // Create square obstacles
+    function createSquareObstacleFace(pt: Point, dist: number): Face {
+        return faceFromPolyline([
             [pt.x, pt.y - dist],
             [pt.x + dist, pt.y],
             [pt.x, pt.y + dist],
             [pt.x - dist, pt.y],
-        ];
+        ].map(p => new Point(p[0], p[1])));
     }
+
+    // Create a list of square obstacles
     let loc = 25;
     let houseRadius = 2;
     let barracksRadius = 5;
-    const rawObstacles: number[][][] = [
+    const obstacleFaces: Face[] = [
         //[[10, -10], [10, -20], [20, -20], [20, -10]],
         //[[30, -30], [30, -40], [60, -40], [60, -30]],
         //[[21, -10], [30, -20], [60, -15], [40, -5]],
-        createSquareRawObstacle(new Point(loc+0.5/5*barracksRadius, -loc+0.5/5*barracksRadius), barracksRadius),
-        createSquareRawObstacle(new Point(loc+4/5*barracksRadius, -loc+8/5*barracksRadius), barracksRadius),
-        createSquareRawObstacle(new Point(loc+(4+3.1)/5*barracksRadius, -loc+(8+7)/5*barracksRadius), barracksRadius),
-        createSquareRawObstacle(new Point(loc-3/5*barracksRadius, -loc+(15)/5*barracksRadius), houseRadius),
-        createSquareRawObstacle(new Point(loc-9/5*barracksRadius, -loc+(19)/5*barracksRadius), houseRadius),
+        createSquareObstacleFace(new Point(loc+0.5/5*barracksRadius, -loc+0.5/5*barracksRadius), barracksRadius),
+        createSquareObstacleFace(new Point(loc+4/5*barracksRadius, -loc+8/5*barracksRadius), barracksRadius),
+        createSquareObstacleFace(new Point(loc+(4+3.1)/5*barracksRadius, -loc+(8+7)/5*barracksRadius), barracksRadius),
+        createSquareObstacleFace(new Point(loc-3/5*barracksRadius, -loc+(15)/5*barracksRadius), houseRadius),
+        createSquareObstacleFace(new Point(loc-9/5*barracksRadius, -loc+(19)/5*barracksRadius), houseRadius),
     ];
-    // Convert into obstacle faces
 
-    let minX = 0;
-    let maxY = 0;
-    let maxX = 45;
-    let minY = -45;
-    let boundingFace = faceFromPolyline([[minX, maxY], [minX, minY], [maxX, minY], [maxX, maxY]].map(pt => new Point(pt[0], pt[1])));
-    let obstacleFaces = rawObstacles.map(polyline => faceFromPolyline(polyline.map(pt => new Point(pt[0], pt[1]))));
-
-    let traversableFaces = traverableFacesFromObstacles(boundingFace, obstacleFaces);
-    // TODO: Cut facets into acute vertices during offset, so that 0.99/sqrt(2) is guaranteed to be safe
-    const OBSTACLE_OFFSET = AGENT_RADIUS*0.99/Math.sqrt(2);
-    let offsetTraversableFaces = traverableFacesFromObstacles(
-        offsetFace(boundingFace, -OBSTACLE_OFFSET),
-        obstacleFaces.map(face => offsetFace(face, OBSTACLE_OFFSET)),
-    );
-
-    //const meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena-merged.mesh');
-    //let meshPolyData = await loadMesh('https://raw.githubusercontent.com/vleue/polyanya/main/meshes/arena.mesh');
-    //const meshPolyData = await loadMesh('https://api.allorigins.win/raw?url=https://pastebin.com/raw/DdgmNAT3');
-    //let traversableFaces = loadPolyData(meshPolyData);
-
-    // Simplify the mesh, mark corners, and validate the mesh
-    mergeAllFaces(traversableFaces);
-    mergeAllFaces(offsetTraversableFaces);
-    markCorners(offsetTraversableFaces);
-    let badFace = findBadFace(offsetTraversableFaces);
-    if (badFace != null) {
-        console.log('Bad Face Found!', badFace);
-        console.log(badFace.rootEdge, badFace.rootEdge.next, badFace.rootEdge.next.next, badFace.rootEdge.next.next.next, badFace.rootEdge.next.next.next.next);
-        return;
+    for(let obstacleFace of obstacleFaces) {
+        pathfinding.addObstacle(obstacleFace);
     }
 
     // Set the canvas dimensions based on the mesh and the MARGIN
-    setCanvasDimensions(Math.ceil(SCALE*(maxX+2*MARGIN)), Math.ceil(SCALE*(-minY+2*MARGIN)));
+    setCanvasDimensions(Math.ceil(SCALE*(pathfinding.bottomRight.x+2*MARGIN)), Math.ceil(SCALE*(-pathfinding.bottomRight.y+2*MARGIN)));
 
     // Constants
     let agentSpeed = 2;
-    let agents = [
-        new Agent(new Point(8.5, -1.5), AGENT_RADIUS, agentSpeed),
-        new Agent(new Point(9.5, -1.5), AGENT_RADIUS, agentSpeed),
-        new Agent(new Point(10.5, -1.5), AGENT_RADIUS, agentSpeed),
-        new Agent(new Point(11.5, -1.5), AGENT_RADIUS, agentSpeed),
-        new Agent(new Point(12.5, -1.5), AGENT_RADIUS, agentSpeed),
+    let groupAgentPoints = [
+        new Point(8.5, -1.5),
+        new Point(9.5, -1.5),
+        new Point(10.5, -1.5),
+        new Point(21.5, -1.5),
+        new Point(12.5, -1.5),
+        new Point(8.5, -2.5),
+        new Point(9.5, -2.5),
+        new Point(10.5, -2.5),
+        new Point(11.5, -2.5),
     ];
-    if (true) {
-        agents.push(...[
-            new Agent(new Point(8.5, -2.5), AGENT_RADIUS, agentSpeed),
-            new Agent(new Point(9.5, -2.5), AGENT_RADIUS, agentSpeed),
-            new Agent(new Point(10.5, -2.5), AGENT_RADIUS, agentSpeed),
-            new Agent(new Point(11.5, -2.5), AGENT_RADIUS, agentSpeed),
-            //new Agent(new Point(12.5, -2.5), AGENT_RADIUS, agentSpeed),
-        ]);
-    }
-    let formation = new Formation(boundingFace, obstacleFaces, offsetTraversableFaces);
-    formation.addAgents(agents);
-    agents = [
-        new Agent(new Point(10.5, -10.5), AGENT_RADIUS, agentSpeed),
-        new Agent(new Point(11.5, -15.5), AGENT_RADIUS, agentSpeed),
+    let otherAgentPoints = [
+        new Point(10.5, -10.5),
+        new Point(11.5, -15.5),
     ];
-    for(let agent of agents) {
-        await agent.setFinalTarget(offsetTraversableFaces, agent.position);
+
+    let groupID = pathfinding.groupCreate();
+    for(let pt of groupAgentPoints) {
+        let agentID = pathfinding.addAgent(pt, AGENT_RADIUS, agentSpeed);
+        pathfinding.groupAddAgent(groupID, agentID);
     }
+    for(let pt of otherAgentPoints) {
+        let agentID = pathfinding.addAgent(pt, AGENT_RADIUS, agentSpeed);
+    }
+
+    // Input Management
     let lastClick: Point | null = null; // Stores the Point clicked at, if a point was clicked at
     let keysHeld: string[] = []; // Stores the keys pressed
     let lastKeysHeld: string[] = []; // Stores the keys pressed
@@ -155,7 +126,7 @@ async function main() {
         }
         zoom = Math.min(Math.max(zoom, 0.5), 6);
         if (isKeyPressed('KeyR')) {
-            formation.stop();
+            pathfinding.groupStop(groupID);
         }
         if (isKeyPressed('KeyV')) {
             if (DRAW_DEBUG_TRACKS) {
@@ -175,7 +146,7 @@ async function main() {
         const rect = canvas.getBoundingClientRect();
         // Reset and Blank screen
         ctx.resetTransform();
-        ctx.fillStyle = "black";
+        ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, rect.width, rect.height);
         // Set the projection matrix
         ctx.translate(rect.width/2, rect.height/2);
@@ -188,8 +159,8 @@ async function main() {
             ctx.rotate(Math.PI / 4);
             ctx.translate(-rect.width/2, -rect.height/2);
         }
-        for(let face of traversableFaces) {
-            drawFace(face, 'white');
+        for(let face of obstacleFaces) {
+            drawFace(face, 'black');
         }
 
         // Iteration and Logic
@@ -197,45 +168,33 @@ async function main() {
 
         // Update path code
         if (lastClick != null) {
-            await formation.pathfind(lastClick);
+            await pathfinding.groupPathfind(groupID, lastClick);
         }
-        // Iterate all agents
+        // Iterate pathfinding system
         let deltaTime = 1/TARGET_FPS;
-        let allAgentsInFormation = formation.formationAgents.map(formationAgent => formationAgent.agent);
-        for(let i = 0; i < agents.length; i++) {
-            let agent = agents[i];
-            let otherAgents = agents.slice();
-            otherAgents.splice(i, 1);
-            otherAgents = otherAgents.concat(allAgentsInFormation);
-            await agent.considerNeighboringAgents(boundingFace, obstacleFaces, offsetTraversableFaces, otherAgents, deltaTime);
-        }
-        await formation.considerNeighboringAgents(agents, deltaTime);
-        for(let agent of agents) {
-            agent.iterate(deltaTime);
-        }
-        // TODO: Store formation agents in the same datastructure, so that all agents can ORCA
-        await formation.iterate(deltaTime);
+        await pathfinding.iterate(deltaTime);
         let endLogicTimer = performance.now();
 
         // Rendering code
-        for(let agent of agents) {
-            drawPoint(agent.position, 'red', agent.radius);
-            if (DRAW_AGENT_PATHING && agent.path.length > 0) {
-                drawPath([agent.position, ...agent.path], 'purple');
-            }
-        }
-        for(let i = 0; i < formation.formationAgents.length; i++) {
-            let formationAgent = formation.formationAgents[i];
-            let agent = formationAgent.agent;
+        for(let [agentID, agent] of pathfinding.agents.entries()) {
+            let isInGroup = false;
             let isRunning = false;
-            if (formationAgent.isInFormation && agent.prevVel !== undefined) {
-                isRunning = agent.prevVel.magnitude() > formation.speed + EPSILON;
+            if (pathfinding.agentToGroup.has(agentID)) {
+                isInGroup = true;
             }
-            drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green', agent.radius);
+            if (agent.prevVel !== undefined && agent.prevVel.magnitude() > agent.speed + EPSILON) {
+                isRunning = true;
+            }
+            if (!isInGroup) {
+                drawPoint(agent.position, 'red', agent.radius);
+            } else {
+                drawPoint(agent.position, (isRunning && DRAW_RUNNING_COLOR) ? 'lightgreen' : 'green', agent.radius);
+            }
             if (DRAW_AGENT_PATHING && agent.path.length > 0) {
                 drawPath([agent.position, ...agent.path], 'purple');
             }
         }
+        let formation = Array.from(pathfinding.groups.values())[0].formation!;
         if (DRAW_DEBUG_TRACKS && formation.mainTrack != null) {
             drawPoint(formation.position, 'purple', 0.2, true);
             let mainTrack = formation.mainTrack;
